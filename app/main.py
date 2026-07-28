@@ -20,7 +20,7 @@ async def read_root():
             }
             body {
                 background-color: #0f172a;
-                color: #f8fafc;
+                color: #f8fafd;
                 font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
                 display: flex;
                 align-items: center;
