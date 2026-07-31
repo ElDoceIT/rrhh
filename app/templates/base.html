@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script>if(localStorage.getItem("app_theme")==="dark"){document.documentElement.dataset.theme="dark"}</script>
+  <title>{% block title %}Horas extras{% endblock %} · RRHH</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+  <link rel="stylesheet" href="{{ url_for('static', path='/css/styles.css') }}">
+</head>
+<body>
+  <header class="app-menu">
+    <div class="app-menu-left">
+      <a class="app-brand-mark" href="/" aria-label="Inicio" title="Inicio">
+        <img src="{{ url_for('static', path='/logoc12_1.png') }}" alt="Canal Doce" width="25" height="25">
+      </a>
+      <a class="home-button{% if active_page == 'home' %} active{% endif %}" href="/" aria-label="Inicio" title="Inicio"><i class="bi bi-house-door-fill"></i></a>
+      <span class="nav-separator" aria-hidden="true"></span>
+      <a class="app-menu-link{% if active_page == 'home' %} active{% endif %}" href="/">Horas extras</a>
+      <span class="nav-separator" aria-hidden="true"></span>
+      <a class="app-menu-link{% if active_page == 'autorizaciones' %} active{% endif %}" href="/autorizaciones">Autorizaciones</a>
+      <span class="nav-separator" aria-hidden="true"></span>
+      <div class="menu-dropdown">
+        <button class="app-menu-link dropdown-trigger{% if active_page in ['parametros', 'usuarios', 'feriados'] %} active{% endif %}" type="button">
+          Configuración <i class="bi bi-chevron-down"></i>
+        </button>
+        <div class="dropdown-panel">
+          <a href="/configuracion/parametros"><i class="bi bi-sliders"></i> Parámetros</a>
+          <a href="/configuracion/usuarios"><i class="bi bi-people"></i> Usuarios y roles</a>
+          <a href="/configuracion/feriados"><i class="bi bi-calendar-event"></i> Feriados</a>
+        </div>
+      </div>
+    </div>
+    <div class="app-menu-right">
+      <a class="db-status" href="/health/db" target="_blank" title="Verificar conexión"><i class="bi bi-database-check"></i> Base de datos</a>
+      <button class="ui-btn icon-btn" id="theme-toggle" type="button" aria-label="Cambiar tema" title="Cambiar tema"><i class="bi bi-moon-stars-fill"></i></button>
+    </div>
+  </header>
+  <main class="main-content">{% block content %}{% endblock %}</main>
+  <footer class="app-footer">Canal Doce © 2026 · Gestión de horas extras</footer>
+  <script src="{{ url_for('static', path='/js/app.js') }}"></script>
+</body>
+</html>

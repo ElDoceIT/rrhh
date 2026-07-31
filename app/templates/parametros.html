@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Parámetros{% endblock %}
+{% block content %}
+<div class="container">
+  <nav class="breadcrumb" aria-label="Migas de pan"><a href="/">Inicio</a><i class="bi bi-chevron-right"></i><span>Configuración</span><i class="bi bi-chevron-right"></i><strong>Parámetros</strong></nav>
+  <header class="page-header"><div><span class="eyebrow">Configuración</span><h1>Parámetros</h1><p>Definí cómo se clasifican las horas según el convenio y el tipo de día.</p></div></header>
+
+  {% if guardado %}<div class="alert success"><i class="bi bi-check-circle-fill"></i> La regla fue {{ guardado }} correctamente.</div>{% endif %}
+  {% if error %}<div class="alert error"><i class="bi bi-exclamation-triangle-fill"></i> {{ error }}</div>{% endif %}
+
+  <section class="card form-card" id="formulario-regla">
+    <div class="section-heading section-heading-pill">
+      <div><span class="section-kicker">Reglas de cálculo</span><h2>{% if regla_edicion %}Editar regla #{{ regla_edicion.id }}{% else %}Nueva regla{% endif %}</h2></div>
+      {% if regla_edicion %}<a class="ui-btn" href="/configuracion/parametros"><i class="bi bi-x-lg"></i> Cancelar edición</a>{% endif %}
+    </div>
+    <form method="post" action="{% if regla_edicion %}/configuracion/parametros/reglas/{{ regla_edicion.id }}{% else %}/configuracion/parametros/reglas{% endif %}" class="rule-form">
+      <label class="field"><span>Convenio <b>*</b></span><input name="convenio" maxlength="50" required placeholder="Ej.: SATSAID" value="{{ regla_edicion.convenio if regla_edicion else '' }}"></label>
+      <label class="field"><span>Tipo de día <b>*</b></span><input name="tipo_dia" maxlength="20" required placeholder="Ej.: HÁBIL" value="{{ regla_edicion.tipo_dia if regla_edicion else '' }}"></label>
+      <label class="field"><span>Tipo de hora <b>*</b></span><input name="tipo_hora" maxlength="20" required placeholder="Ej.: 50%" value="{{ regla_edicion.tipo_hora if regla_edicion else '' }}"></label>
+      <label class="field"><span>Nocturna desde</span><input type="time" name="hora_nocturna_desde" value="{{ regla_edicion.hora_nocturna_desde.strftime('%H:%M') if regla_edicion and regla_edicion.hora_nocturna_desde else '' }}"></label>
+      <label class="field"><span>Nocturna hasta</span><input type="time" name="hora_nocturna_hasta" value="{{ regla_edicion.hora_nocturna_hasta.strftime('%H:%M') if regla_edicion and regla_edicion.hora_nocturna_hasta else '' }}"></label>
+      <label class="check-field"><input type="checkbox" name="permite_reintegro" {% if regla_edicion and regla_edicion.permite_reintegro %}checked{% endif %}><span><strong>Permite reintegro</strong><small>Habilita el reintegro asociado a esta regla.</small></span></label>
+      <label class="field field-wide"><span>Observaciones</span><textarea name="observaciones" rows="3" placeholder="Información adicional de la regla">{{ regla_edicion.observaciones if regla_edicion and regla_edicion.observaciones else '' }}</textarea></label>
+      <div class="form-actions"><button class="ui-btn primary-btn" type="submit"><i class="bi bi-check-lg"></i> {% if regla_edicion %}Guardar cambios{% else %}Crear regla{% endif %}</button></div>
+    </form>
+  </section>
+
+  <section class="card">
+    <div class="section-heading section-heading-pill"><div><span class="section-kicker">Reglas configuradas</span><h2>Listado de reglas</h2></div><span class="count-chip">{{ reglas|length }}</span></div>
+    {% if reglas %}
+    <div class="table-wrap"><table class="ui-table">
+      <thead><tr><th>Convenio</th><th>Tipo de día</th><th>Tipo de hora</th><th>Franja nocturna</th><th>Reintegro</th><th>Observaciones</th><th class="actions-column">Acciones</th></tr></thead>
+      <tbody>{% for regla in reglas %}<tr>
+        <td data-label="Convenio"><strong>{{ regla.convenio }}</strong></td><td data-label="Tipo de día">{{ regla.tipo_dia }}</td><td data-label="Tipo de hora"><span class="type-chip">{{ regla.tipo_hora }}</span></td>
+        <td data-label="Franja nocturna">{% if regla.hora_nocturna_desde or regla.hora_nocturna_hasta %}{{ regla.hora_nocturna_desde.strftime('%H:%M') if regla.hora_nocturna_desde else '—' }} a {{ regla.hora_nocturna_hasta.strftime('%H:%M') if regla.hora_nocturna_hasta else '—' }}{% else %}<span class="muted">Sin definir</span>{% endif %}</td>
+        <td data-label="Reintegro">{% if regla.permite_reintegro %}<span class="status-chip success-chip"><i class="bi bi-check"></i> Sí</span>{% else %}<span class="status-chip neutral-chip">No</span>{% endif %}</td>
+        <td data-label="Observaciones" class="observations">{{ regla.observaciones or '—' }}</td>
+        <td data-label="Acciones" class="actions-column"><a class="ui-btn icon-btn edit-btn" href="/configuracion/parametros?editar={{ regla.id }}#formulario-regla" aria-label="Editar regla {{ regla.id }}" title="Editar"><i class="bi bi-pencil"></i></a></td>
+      </tr>{% endfor %}</tbody>
+    </table></div>
+    {% else %}<div class="empty-state"><i class="bi bi-sliders"></i><strong>No hay reglas configuradas</strong><span>Completá el formulario para crear la primera regla.</span></div>{% endif %}
+  </section>
+</div>
+{% endblock %}

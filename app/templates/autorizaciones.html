@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Autorizaciones{% endblock %}
+{% block content %}
+<div class="container">
+  <header class="page-header"><div><span class="eyebrow">Jefaturas</span><h1>Autorización de horas extras</h1><p>Revisá y autorizá las cargas pendientes de usuarios de tu mismo rol.</p></div></header>
+
+  <section class="card chief-selector-card">
+    <form method="get" action="/autorizaciones" class="chief-selector">
+      <label class="field"><span>Jefe actuante *</span><select name="jefe_id" required><option value="" disabled {% if not jefe %}selected{% endif %}>Seleccionar jefe</option>{% for item in jefes %}<option value="{{ item.id }}" {% if jefe and jefe.id == item.id %}selected{% endif %}>{{ item.apellido }}, {{ item.nombre }} · {{ item.rol.rol }}</option>{% endfor %}</select><small>Selección temporal hasta incorporar el inicio de sesión.</small></label>
+      <button class="ui-btn primary-btn" type="submit"><i class="bi bi-arrow-right"></i> Ingresar</button>
+    </form>
+  </section>
+
+  {% if jefe %}
+  {% if guardado %}<div class="alert success"><i class="bi bi-check-circle-fill"></i> Se autorizaron {{ guardado }} {{ 'registro' if guardado == 1 else 'registros' }} correctamente.</div>{% endif %}
+  {% if rechazado %}<div class="alert warning"><i class="bi bi-x-circle-fill"></i> Se rechazaron {{ rechazado }} {{ 'registro' if rechazado == 1 else 'registros' }}.</div>{% endif %}
+  <section class="result-summary authorization-summary">
+    <article class="summary-card"><span>Rol supervisado</span><strong class="summary-text">{{ jefe.rol.rol }}</strong><small>{{ jefe.apellido }}, {{ jefe.nombre }}</small></article>
+    <article class="summary-card"><span>Usuarios</span><strong>{{ grupos|length }}</strong><small>con horas pendientes</small></article>
+    <article class="summary-card"><span>Cargas pendientes</span><strong>{{ cantidad_pendientes }}</strong><small>esperando autorización</small></article>
+    <article class="summary-card"><span>Horas pendientes</span><strong>{{ '%.2f'|format(total_pendiente) }}</strong><small>horas extra calculadas</small></article>
+  </section>
+
+  {% if hora_edicion %}
+  <section class="card form-card" id="editar-carga">
+    <div class="section-heading section-heading-pill"><h2>Editar carga de {{ hora_edicion.usuario.apellido }}, {{ hora_edicion.usuario.nombre }}</h2><a class="ui-btn icon-btn" href="/autorizaciones?jefe_id={{ jefe.id }}" aria-label="Cancelar edición" title="Cancelar"><i class="bi bi-x-lg"></i></a></div>
+    <form method="post" action="/autorizaciones/{{ hora_edicion.id }}/editar" class="authorization-edit-form">
+      <input type="hidden" name="jefe_id" value="{{ jefe.id }}">
+      <label class="field"><span>Fecha *</span><input type="date" name="fecha" required value="{{ hora_edicion.fecha.isoformat() }}"></label><label class="field"><span>Hora de inicio *</span><input type="time" name="hora_inicio" required value="{{ hora_edicion.hora_inicio.strftime('%H:%M') }}"></label><label class="field"><span>Hora de finalización *</span><input type="time" name="hora_fin" required value="{{ hora_edicion.hora_fin.strftime('%H:%M') }}"></label>
+      <label class="check-field"><input type="checkbox" name="solicita_reintegro" {% if hora_edicion.solicita_reintegro %}checked{% endif %}><span><strong>Solicita reintegro</strong><small>Se respetará lo permitido por la regla.</small></span></label>
+      <label class="field edit-observations"><span>Observaciones</span><textarea name="observaciones" rows="3">{{ hora_edicion.observaciones or '' }}</textarea></label>
+      <div class="form-actions"><a class="ui-btn" href="/autorizaciones?jefe_id={{ jefe.id }}">Cancelar</a><button class="ui-btn primary-btn" type="submit"><i class="bi bi-check-lg"></i> Guardar cambios</button></div>
+    </form>
+  </section>
+  {% endif %}
+
+  {% if grupos %}
+  <form method="post" action="/autorizaciones/aprobar" id="authorization-form">
+    <input type="hidden" name="jefe_id" value="{{ jefe.id }}">
+    <div class="authorization-toolbar"><label class="selection-control"><input type="checkbox" id="select-all-hours"> Seleccionar todo</label><span class="muted">Marcá registros individuales o todos los de un usuario.</span></div>
+    <div class="authorization-groups">
+      {% for grupo in grupos %}<section class="card authorization-group">
+        <header class="authorization-group-header"><label class="selection-control"><input type="checkbox" class="select-user-hours" data-user-id="{{ grupo.usuario.id }}"><span><strong>{{ grupo.usuario.apellido }}, {{ grupo.usuario.nombre }}</strong><small>{{ grupo.usuario.convenio }} · {{ grupo.usuario.perfil|capitalize }} · Legajo {{ grupo.usuario.legajo or '—' }}</small></span></label><span class="group-total">{{ grupo.horas|length }} {{ 'carga' if grupo.horas|length == 1 else 'cargas' }} · {{ '%.2f'|format(grupo.total) }} h</span></header>
+        <div class="table-wrap"><table class="ui-table">
+          <thead><tr><th class="check-column"></th><th>Fecha</th><th>Horario</th><th>Día</th><th>Tipo</th><th>Horas</th><th>Nocturnas</th><th>Reintegro</th><th>Observaciones</th><th class="actions-column">Acciones</th></tr></thead>
+          <tbody>{% for hora in grupo.horas %}<tr>
+            <td data-label="Seleccionar" class="check-column"><input type="checkbox" class="hour-checkbox" data-user-id="{{ grupo.usuario.id }}" name="hora_ids" value="{{ hora.id }}" aria-label="Seleccionar carga del {{ hora.fecha.strftime('%d/%m/%Y') }}"></td><td data-label="Fecha"><strong>{{ hora.fecha.strftime('%d/%m/%Y') }}</strong></td><td data-label="Horario">{{ hora.hora_inicio.strftime('%H:%M') }} a {{ hora.hora_fin.strftime('%H:%M') }}</td><td data-label="Día">{{ hora.tipo_dia }}</td><td data-label="Tipo"><span class="type-chip">{{ hora.tipo_hora }}%</span></td><td data-label="Horas"><strong>{{ '%.2f'|format(hora.horas_totales) }}</strong></td><td data-label="Nocturnas">{{ '%.2f'|format(hora.horas_nocturnas) }}</td><td data-label="Reintegro">{% if hora.solicita_reintegro %}<span class="status-chip success-chip">Sí</span>{% else %}<span class="status-chip neutral-chip">No</span>{% endif %}</td><td data-label="Observaciones" class="observations">{{ hora.observaciones or '—' }}</td><td data-label="Acciones" class="actions-column"><a class="ui-btn icon-btn edit-btn" href="/autorizaciones?jefe_id={{ jefe.id }}&editar={{ hora.id }}#editar-carga" aria-label="Editar carga" title="Editar carga"><i class="bi bi-pencil"></i></a></td>
+          </tr>{% endfor %}</tbody>
+        </table></div>
+      </section>{% endfor %}
+    </div>
+    <div class="authorization-actions"><span><strong id="selected-count">0</strong> seleccionadas</span><div class="authorization-buttons"><button class="ui-btn danger-btn" id="reject-selected" type="submit" formaction="/autorizaciones/rechazar" disabled><i class="bi bi-x-lg" aria-hidden="true"></i> Rechazar seleccionadas</button><button class="ui-btn success-btn" id="authorize-selected" type="submit" disabled><i class="bi bi-check-lg" aria-hidden="true"></i> Autorizar seleccionadas</button></div></div>
+  </form>
+  {% else %}<div class="empty-state"><i class="bi bi-check2-all"></i><strong>No hay horas pendientes</strong><span>No existen cargas pendientes para usuarios del rol {{ jefe.rol.rol }}.</span></div>{% endif %}
+  {% endif %}
+</div>
+{% endblock %}
