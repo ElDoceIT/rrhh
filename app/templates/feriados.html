@@ -3,9 +3,10 @@
 {% block content %}
 <div class="container">
   <nav class="breadcrumb" aria-label="Migas de pan"><a href="/">Inicio</a><i class="bi bi-chevron-right"></i><span>Configuración</span><i class="bi bi-chevron-right"></i><strong>Feriados</strong></nav>
-  <header class="page-header"><div><span class="eyebrow">Configuración</span><h1>Feriados</h1><p>Administrá las fechas que tendrán prioridad en la clasificación de horas extras.</p></div></header>
+  <header class="page-header"><div><span class="eyebrow">Configuración</span><h1>Feriados</h1><p>Administrá las fechas que tendrán prioridad en la clasificación de horas extras.</p></div>{% if anio_actualizacion %}<form method="post" action="/configuracion/feriados/actualizar-anio" onsubmit="return confirm('¿Actualizar todos los feriados de {{ anio_actualizacion }} a {{ anio_actualizacion + 1 }}? Los feriados móviles deberán revisarse.');"><input type="hidden" name="anio_origen" value="{{ anio_actualizacion }}"><button class="ui-btn year-update-btn" type="submit"><i class="bi bi-calendar2-plus"></i> Actualizar {{ anio_actualizacion }} a {{ anio_actualizacion + 1 }}</button></form>{% endif %}</header>
   {% if guardado %}<div class="alert success"><i class="bi bi-check-circle-fill"></i> Feriado {{ guardado }} correctamente.</div>{% endif %}
   {% if error %}<div class="alert error"><i class="bi bi-exclamation-triangle-fill"></i> {{ error }}.</div>{% endif %}
+  {% if anio_actualizado %}<div class="alert success year-update-alert"><i class="bi bi-check-circle-fill"></i> Feriados actualizados a {{ anio_actualizado }}: {{ cantidad }} fechas modificadas{% if duplicados %} y {{ duplicados }} duplicadas consolidadas{% endif %}.</div><div class="alert warning year-update-alert"><i class="bi bi-exclamation-triangle-fill"></i> Revisá Carnaval, Semana Santa y feriados trasladables porque pueden cambiar de día.</div>{% endif %}
 
   <section class="card form-card" id="formulario-feriado">
     <div class="section-heading section-heading-pill"><h2>{% if feriado_edicion %}Editar feriado #{{ feriado_edicion.id }}{% else %}Nuevo feriado{% endif %}</h2><span class="count-chip">{{ feriados|length }}</span></div>

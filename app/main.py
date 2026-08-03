@@ -621,6 +621,9 @@ def administrar_feriados(
     editar: int | None = None,
     guardado: str | None = None,
     error: str | None = None,
+    anio_actualizado: int | None = None,
+    cantidad: int | None = None,
+    duplicados: int | None = None,
     db: Session = Depends(get_db),
 ):
     feriados: list[Feriado] = []
@@ -639,6 +642,13 @@ def administrar_feriados(
         "feriado_edicion": feriado_edicion,
         "guardado": guardado,
         "error": error,
+        "anio_actualizado": anio_actualizado,
+        "cantidad": cantidad or 0,
+        "duplicados": duplicados or 0,
+        "anio_actualizacion": min(
+            (feriado.fecha.year for feriado in feriados),
+            default=None,
+        ),
     })
 
 
@@ -658,6 +668,65 @@ def crear_feriado(
         db.rollback()
         return RedirectResponse("/configuracion/feriados?error=Ya+existe+un+feriado+en+esa+fecha", status_code=303)
     return RedirectResponse("/configuracion/feriados?guardado=creado", status_code=303)
+
+
+@app.post("/configuracion/feriados/actualizar-anio")
+def actualizar_anio_feriados(
+    anio_origen: Annotated[int, Form()],
+    db: Session = Depends(get_db),
+):
+    if anio_origen < 1900 or anio_origen > 9998:
+        raise HTTPException(status_code=422, detail="El año indicado no es válido.")
+    feriados_origen = list(db.scalars(
+        select(Feriado)
+        .where(
+            Feriado.fecha >= date(anio_origen, 1, 1),
+            Feriado.fecha <= date(anio_origen, 12, 31),
+        )
+        .order_by(Feriado.fecha)
+    ))
+    if not feriados_origen:
+        return RedirectResponse(
+            "/configuracion/feriados?error=No+hay+feriados+para+el+año+seleccionado",
+            status_code=303,
+        )
+
+    anio_destino = anio_origen + 1
+    fechas_destino = {
+        feriado.fecha: feriado
+        for feriado in db.scalars(
+            select(Feriado).where(
+                Feriado.fecha >= date(anio_destino, 1, 1),
+                Feriado.fecha <= date(anio_destino, 12, 31),
+            )
+        )
+    }
+    actualizados = 0
+    duplicados = 0
+    try:
+        for feriado in feriados_origen:
+            try:
+                nueva_fecha = feriado.fecha.replace(year=anio_destino)
+            except ValueError as error:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"La fecha {feriado.fecha.strftime('%d/%m/%Y')} no existe en {anio_destino}.",
+                ) from error
+            if nueva_fecha in fechas_destino:
+                db.delete(feriado)
+                duplicados += 1
+            else:
+                feriado.fecha = nueva_fecha
+                fechas_destino[nueva_fecha] = feriado
+                actualizados += 1
+        db.commit()
+    except SQLAlchemyError as error:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="No se pudo actualizar el año de los feriados.") from error
+    return RedirectResponse(
+        f"/configuracion/feriados?anio_actualizado={anio_destino}&cantidad={actualizados}&duplicados={duplicados}",
+        status_code=303,
+    )
 
 
 @app.post("/configuracion/feriados/{feriado_id}")
