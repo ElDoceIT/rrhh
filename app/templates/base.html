@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="{{ url_for('static', path='/css/styles.css') }}">
 </head>
 <body>
+  {% set current_user = request.session.get("user") %}
   <header class="app-menu">
     <div class="app-menu-left">
       <a class="app-brand-mark" href="/" aria-label="Inicio" title="Inicio">
@@ -32,6 +33,10 @@
       </div>
     </div>
     <div class="app-menu-right">
+      {% if current_user %}
+      <span class="session-user" title="{{ current_user.email or current_user.username }}"><i class="bi bi-person-circle"></i> {{ current_user.display_name }}</span>
+      <form method="post" action="/logout" class="logout-form"><button class="ui-btn icon-btn" type="submit" aria-label="Cerrar sesión" title="Cerrar sesión"><i class="bi bi-box-arrow-right"></i></button></form>
+      {% endif %}
       <a class="db-status" href="/health/db" target="_blank" title="Verificar conexión"><i class="bi bi-database-check"></i> Base de datos</a>
       <button class="ui-btn icon-btn" id="theme-toggle" type="button" aria-label="Cambiar tema" title="Cambiar tema"><i class="bi bi-moon-stars-fill"></i></button>
     </div>

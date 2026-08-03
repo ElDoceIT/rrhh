@@ -1,3 +1,5 @@
+import os
+import secrets
 from datetime import date, datetime, time
 from decimal import Decimal
 from typing import Annotated
@@ -8,17 +10,41 @@ from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.sessions import SessionMiddleware
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
 
 from app.database.connection import engine, get_db
 from app.database.models import Feriado, HoraExtra, ReglaHora, TipoContratacion, Usuario, UsuarioRol
+from app.services.ad_auth import ActiveDirectoryAuthError, authenticate_ad_user
 from app.services.calculo_horas import CalculoHorasError, calcular_resultado_horas_extra
 
 app = FastAPI(title="Horas extras")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 templates = Jinja2Templates(directory="app/templates")
+
+PUBLIC_PATHS = {"/login", "/health", "/health/db", "/health/database"}
+
+
+@app.middleware("http")
+async def require_login(request: Request, call_next):
+    path = request.url.path
+    if (
+        path.startswith("/static/")
+        or path in PUBLIC_PATHS
+        or request.session.get("user") is not None
+    ):
+        return await call_next(request)
+    return RedirectResponse(f"/login?next={quote(path, safe='/')}", status_code=303)
+
+
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=os.getenv("SESSION_SECRET_KEY", "rrhh-dev-session-key-change-me"),
+    same_site="lax",
+    https_only=os.getenv("SESSION_COOKIE_SECURE", "false").lower() in {"1", "true", "yes", "on"},
+)
 
 
 def parse_optional_time(value: str | None) -> time | None:
@@ -62,6 +88,31 @@ def clean_optional(value: str | None) -> str | None:
 
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def safe_next_url(value: str | None) -> str:
+    if not value or not value.startswith("/") or value.startswith("//"):
+        return "/"
+    return value
+
+
+def authenticate_local_admin(username: str, password: str) -> dict | None:
+    local_username = os.getenv("LOCAL_ADMIN_USERNAME")
+    local_password = os.getenv("LOCAL_ADMIN_PASSWORD")
+    if not local_username or not local_password:
+        return None
+    if (
+        secrets.compare_digest(username.strip(), local_username)
+        and secrets.compare_digest(password, local_password)
+    ):
+        return {
+            "username": local_username,
+            "display_name": "Administrador RRHH",
+            "email": None,
+            "source": "LOCAL",
+            "profile": "ADMIN",
+        }
+    return None
 
 
 def encode_carga(
@@ -139,6 +190,60 @@ def validar_hora_para_jefe(
             detail="La carga ya no está pendiente de autorización.",
         )
     return hora
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page(request: Request, next: str | None = None, error: str | None = None):
+    if request.session.get("user"):
+        return RedirectResponse(safe_next_url(next), status_code=303)
+    return templates.TemplateResponse(request, "login.html", {
+        "active_page": "login",
+        "next_url": safe_next_url(next),
+        "error": error,
+    })
+
+
+@app.post("/login")
+def login(
+    request: Request,
+    username: Annotated[str, Form()],
+    password: Annotated[str, Form()],
+    next_url: Annotated[str | None, Form()] = None,
+):
+    redirect_to = safe_next_url(next_url)
+    local_user = authenticate_local_admin(username, password)
+    if local_user:
+        request.session["user"] = local_user
+        return RedirectResponse(redirect_to, status_code=303)
+
+    try:
+        ad_user = authenticate_ad_user(username, password)
+    except ActiveDirectoryAuthError as error:
+        return templates.TemplateResponse(
+            request,
+            "login.html",
+            {
+                "active_page": "login",
+                "next_url": redirect_to,
+                "error": str(error),
+                "username": username,
+            },
+            status_code=401,
+        )
+
+    request.session["user"] = {
+        "username": ad_user.username,
+        "display_name": ad_user.display_name,
+        "email": ad_user.email,
+        "source": "AD",
+    }
+    return RedirectResponse(redirect_to, status_code=303)
+
+
+@app.post("/logout")
+def logout(request: Request):
+    request.session.clear()
+    return RedirectResponse("/login", status_code=303)
 
 
 @app.get("/", response_class=HTMLResponse)
