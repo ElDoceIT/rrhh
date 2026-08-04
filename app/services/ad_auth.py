@@ -1,0 +1,128 @@
+import os
+import ssl
+from dataclasses import dataclass
+
+from ldap3 import ALL, SIMPLE, Connection, Server, Tls
+from ldap3.core.exceptions import LDAPException
+from ldap3.utils.conv import escape_filter_chars
+
+
+class ActiveDirectoryAuthError(Exception):
+    pass
+
+
+@dataclass(frozen=True)
+class ActiveDirectoryUser:
+    username: str
+    display_name: str
+    email: str | None
+    distinguished_name: str
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on", "si", "sí"}
+
+
+def _required_env(name: str) -> str:
+    value = os.getenv(name)
+    if not value:
+        raise ActiveDirectoryAuthError(f"Falta configurar {name}.")
+    return value
+
+
+def _server() -> Server:
+    validate = ssl.CERT_REQUIRED if _env_bool("AD_TLS_VALIDATE_CERT") else ssl.CERT_NONE
+    tls = Tls(validate=validate)
+    return Server(
+        _required_env("AD_SERVER_IP"),
+        port=int(os.getenv("AD_SERVER_PORT", "389")),
+        use_ssl=_env_bool("AD_USE_SSL"),
+        tls=tls,
+        get_info=ALL,
+        connect_timeout=int(os.getenv("AD_CONNECT_TIMEOUT", "5")),
+    )
+
+
+def _bind_user() -> str:
+    bind_user = _required_env("AD_BIND_USER")
+    domain = os.getenv("AD_DOMAIN")
+    if "\\" not in bind_user and "@" not in bind_user and domain:
+        return f"{bind_user}@{domain}"
+    return bind_user
+
+
+def authenticate_ad_user(username: str, password: str) -> ActiveDirectoryUser:
+    username = username.strip()
+    if not username or not password:
+        raise ActiveDirectoryAuthError("Ingresá usuario y contraseña.")
+
+    login_attr = os.getenv("AD_LOGIN_ATTR", "sAMAccountName")
+    group_name = _required_env("AD_GROUP_NAME")
+    base_dn = _required_env("AD_BASE_DN")
+    groups_base_dn = os.getenv("AD_GROUPS_BASE_DN", base_dn)
+
+    try:
+        with Connection(
+            _server(),
+            user=_bind_user(),
+            password=_required_env("AD_BIND_PASSWORD"),
+            authentication=SIMPLE,
+            auto_bind=True,
+        ) as service_connection:
+            escaped_group = escape_filter_chars(group_name)
+            service_connection.search(
+                groups_base_dn,
+                f"(&(objectClass=group)(cn={escaped_group}))",
+                attributes=["distinguishedName"],
+                size_limit=1,
+            )
+            if not service_connection.entries:
+                raise ActiveDirectoryAuthError("No se encontró el grupo habilitado en AD.")
+            group_dn = service_connection.entries[0].entry_dn
+
+            escaped_username = escape_filter_chars(username)
+            escaped_group_dn = escape_filter_chars(group_dn)
+            service_connection.search(
+                base_dn,
+                (
+                    "(&"
+                    "(objectClass=user)"
+                    f"({login_attr}={escaped_username})"
+                    f"(memberOf:1.2.840.113556.1.4.1941:={escaped_group_dn})"
+                    ")"
+                ),
+                attributes=[login_attr, "displayName", "givenName", "sn", "mail"],
+                size_limit=1,
+            )
+            if not service_connection.entries:
+                raise ActiveDirectoryAuthError("El usuario no está habilitado para esta aplicación.")
+
+            entry = service_connection.entries[0]
+            user_dn = entry.entry_dn
+
+        with Connection(
+            _server(),
+            user=user_dn,
+            password=password,
+            authentication=SIMPLE,
+            auto_bind=True,
+        ):
+            display_name = str(entry.displayName or "").strip()
+            if not display_name:
+                display_name = " ".join(
+                    part for part in [str(entry.givenName or "").strip(), str(entry.sn or "").strip()]
+                    if part
+                )
+            return ActiveDirectoryUser(
+                username=username,
+                display_name=display_name or username,
+                email=str(entry.mail or "").strip() or None,
+                distinguished_name=user_dn,
+            )
+    except ActiveDirectoryAuthError:
+        raise
+    except LDAPException as error:
+        raise ActiveDirectoryAuthError("No se pudo validar el usuario contra Active Directory.") from error
