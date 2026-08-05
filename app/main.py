@@ -1,11 +1,10 @@
 import os
-import secrets
+from contextlib import asynccontextmanager
 from datetime import date, datetime, time
 from decimal import Decimal
 from typing import Annotated
 from urllib.parse import quote, unquote
 
-import bcrypt
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -15,12 +14,28 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
 
-from app.database.connection import engine, get_db
+from app.database.connection import SessionLocal, engine, get_db
 from app.database.models import Feriado, HoraExtra, ReglaHora, TipoContratacion, Usuario, UsuarioRol
 from app.services.ad_auth import ActiveDirectoryAuthError, authenticate_ad_user
 from app.services.calculo_horas import CalculoHorasError, calcular_resultado_horas_extra
+from app.services.local_auth import (
+    authenticate_local_user,
+    find_user,
+    hash_password,
+    initialize_seed_admin,
+    is_local_username,
+    normalize_username,
+    session_user,
+)
 
-app = FastAPI(title="Horas extras")
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    initialize_seed_admin(SessionLocal)
+    yield
+
+
+app = FastAPI(title="Horas extras", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 templates = Jinja2Templates(directory="app/templates")
 
@@ -86,33 +101,10 @@ def clean_optional(value: str | None) -> str | None:
     return value or None
 
 
-def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-
-
 def safe_next_url(value: str | None) -> str:
     if not value or not value.startswith("/") or value.startswith("//"):
         return "/"
     return value
-
-
-def authenticate_local_admin(username: str, password: str) -> dict | None:
-    local_username = os.getenv("LOCAL_ADMIN_USERNAME")
-    local_password = os.getenv("LOCAL_ADMIN_PASSWORD")
-    if not local_username or not local_password:
-        return None
-    if (
-        secrets.compare_digest(username.strip(), local_username)
-        and secrets.compare_digest(password, local_password)
-    ):
-        return {
-            "username": local_username,
-            "display_name": "Administrador RRHH",
-            "email": None,
-            "source": "LOCAL",
-            "profile": "ADMIN",
-        }
-    return None
 
 
 def encode_carga(
@@ -209,15 +201,29 @@ def login(
     username: Annotated[str, Form()],
     password: Annotated[str, Form()],
     next_url: Annotated[str | None, Form()] = None,
+    db: Session = Depends(get_db),
 ):
     redirect_to = safe_next_url(next_url)
-    local_user = authenticate_local_admin(username, password)
-    if local_user:
-        request.session["user"] = local_user
+    normalized_username = normalize_username(username)
+    if is_local_username(normalized_username):
+        local_user = authenticate_local_user(db, normalized_username, password)
+        if local_user is None:
+            return templates.TemplateResponse(
+                request,
+                "login.html",
+                {
+                    "active_page": "login",
+                    "next_url": redirect_to,
+                    "error": "Usuario o contraseña incorrectos.",
+                    "username": normalized_username,
+                },
+                status_code=401,
+            )
+        request.session["user"] = session_user(local_user, "LOCAL")
         return RedirectResponse(redirect_to, status_code=303)
 
     try:
-        ad_user = authenticate_ad_user(username, password)
+        authenticate_ad_user(normalized_username, password)
     except ActiveDirectoryAuthError as error:
         return templates.TemplateResponse(
             request,
@@ -226,17 +232,25 @@ def login(
                 "active_page": "login",
                 "next_url": redirect_to,
                 "error": str(error),
-                "username": username,
+                "username": normalized_username,
             },
             status_code=401,
         )
 
-    request.session["user"] = {
-        "username": ad_user.username,
-        "display_name": ad_user.display_name,
-        "email": ad_user.email,
-        "source": "AD",
-    }
+    database_user = find_user(db, normalized_username)
+    if database_user is None or not database_user.status:
+        return templates.TemplateResponse(
+            request,
+            "login.html",
+            {
+                "active_page": "login",
+                "next_url": redirect_to,
+                "error": "El usuario no está habilitado en la aplicación.",
+                "username": normalized_username,
+            },
+            status_code=403,
+        )
+    request.session["user"] = session_user(database_user, "AD")
     return RedirectResponse(redirect_to, status_code=303)
 
 
