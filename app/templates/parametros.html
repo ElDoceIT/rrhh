@@ -22,7 +22,7 @@
       {% if regla_edicion %}<a class="ui-btn" href="/configuracion/parametros"><i class="bi bi-x-lg"></i> Cancelar edición</a>{% endif %}
     </div>
     <form method="post" action="{% if regla_edicion %}/configuracion/parametros/reglas/{{ regla_edicion.id }}{% else %}/configuracion/parametros/reglas{% endif %}" class="rule-form">
-      <label class="field"><span>Convenio <b>*</b></span><input name="convenio" maxlength="50" required placeholder="Ej.: SATSAID" value="{{ regla_edicion.convenio if regla_edicion else '' }}"></label>
+      <label class="field"><span>Convenio <b>*</b></span><select name="convenio" required><option value="" disabled {% if not regla_edicion %}selected{% endif %}>Seleccionar</option>{% for convenio in convenios_disponibles %}<option value="{{ convenio }}" {% if regla_edicion and regla_edicion.convenio|upper == convenio %}selected{% endif %}>{{ convenio }}</option>{% endfor %}</select></label>
       <label class="field"><span>Tipo de día <b>*</b></span><input name="tipo_dia" maxlength="20" required placeholder="Ej.: HÁBIL" value="{{ regla_edicion.tipo_dia if regla_edicion else '' }}"></label>
       <label class="field"><span>Tipo de hora <b>*</b></span><input name="tipo_hora" maxlength="20" required placeholder="Ej.: 50%" value="{{ regla_edicion.tipo_hora if regla_edicion else '' }}"></label>
       <label class="field"><span>Nocturna desde</span><input type="time" name="hora_nocturna_desde" value="{{ regla_edicion.hora_nocturna_desde.strftime('%H:%M') if regla_edicion and regla_edicion.hora_nocturna_desde else '' }}"></label>

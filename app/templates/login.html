@@ -19,15 +19,13 @@
         </div>
       </div>
 
-      <p class="login-copy">Ingresá con tu usuario de red o con una cuenta local habilitada.</p>
-
       {% if error %}<div class="alert error login-alert"><i class="bi bi-exclamation-triangle-fill"></i> {{ error }}</div>{% endif %}
 
       <form method="post" action="/login" class="login-form">
         <input type="hidden" name="next_url" value="{{ next_url }}">
         <label class="field">
-          <span>Usuario</span>
-          <input name="username" maxlength="100" autocomplete="username" required autofocus value="{{ username or '' }}" placeholder="Ingresá tu usuario">
+          <span>Usuario de red</span>
+          <input name="username" maxlength="100" autocomplete="username" required autofocus value="{{ username or '' }}" placeholder="usuario">
         </label>
         <label class="field">
           <span>Contraseña</span>
@@ -35,8 +33,6 @@
         </label>
         <button class="ui-btn primary-btn login-submit" type="submit"><i class="bi bi-box-arrow-in-right"></i> Ingresar</button>
       </form>
-
-      <p class="login-access-note"><i class="bi bi-shield-lock"></i> El tipo de acceso se detecta automáticamente.</p>
     </section>
   </main>
   <script src="{{ url_for('static', path='/js/app.js') }}"></script>

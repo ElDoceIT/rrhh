@@ -13,7 +13,7 @@
     <div class="section-heading section-heading-pill"><h2>Cargas pendientes de procesar</h2><span class="count-chip" id="draft-count">{{ resultados|length }}</span></div>
     <div class="table-wrap"><table class="ui-table draft-table">
       <thead><tr><th>Usuario</th><th>Registro</th><th>Fecha</th><th>Horario</th><th>Día</th><th>Horas</th><th>Reintegro</th><th>Observaciones</th><th class="actions-column">Acción</th></tr></thead>
-      <tbody>{% for resultado in resultados %}<tr data-draft-row="{{ loop.index0 }}">
+      <tbody>{% for resultado in resultados %}<tr data-draft-row="{{ loop.index0 }}" data-draft-index="{{ loop.index0 }}">
         <td data-label="Usuario"><strong>{{ resultado.usuario_nombre }}</strong><span class="cell-help">Legajo {{ resultado.legajo or '—' }}</span></td>
         <td data-label="Registro"><span class="type-chip">{{ 'Reintegro' if resultado.tipo_registro == 'REINTEGRO' else 'Horas extras' }}</span></td>
         <td data-label="Fecha"><strong>{{ resultado.fecha.strftime('%d/%m/%Y') }}</strong></td>
@@ -34,8 +34,9 @@
       {% for carga in cargas %}<input type="hidden" name="cargas" value="{{ carga }}" data-draft-index="{{ loop.index0 }}">{% endfor %}
       {% for reintegro in reintegros %}<input type="hidden" name="reintegros" value="{{ reintegro }}" data-reintegro-index="{{ loop.index0 }}" data-draft-index="{{ loop.index0 }}">{% endfor %}
       {% if usuario_fijo %}<input type="hidden" name="usuario_id" value="{{ usuario_fijo.id }}">{% else %}<label class="field field-user"><span>Usuario *</span><select name="usuario_id" required><option value="" selected disabled>Seleccionar usuario</option>{% for usuario in usuarios %}<option value="{{ usuario.id }}">{{ usuario.apellido }}, {{ usuario.nombre }}{% if usuario.legajo %} · Legajo {{ usuario.legajo }}{% endif %}</option>{% endfor %}</select></label>{% endif %}
-      <fieldset class="record-type-selector"><legend>Tipo de registro</legend><label><input type="radio" name="tipo_registro" value="HORAS" checked> Horas extras</label><label><input type="radio" name="tipo_registro" value="REINTEGRO"> Solo reintegro</label></fieldset>
+      <fieldset class="record-type-selector"><legend>Tipo de registro</legend><label><input type="radio" name="tipo_registro" value="HORAS" checked> Horas extras</label><label><input type="radio" name="tipo_registro" value="REINTEGRO"> Pedir reintegro día</label></fieldset>
       <label class="field"><span>Fecha *</span><input type="date" name="fecha" value="{{ fecha_hoy }}" required></label>
+      <div class="day-options hours-only-field"><label class="check-field"><input type="checkbox" name="marcar_como_franco"><span><strong>Marcar como franco</strong></span></label><label class="check-field"><input type="checkbox" name="solicita_reintegro_dia"><span><strong>Pedir reintegro día</strong></span></label></div>
       <label class="field hours-only-field"><span>Hora de inicio *</span>{{ time_select('hora_inicio', '', 'start') }}</label>
       <label class="field hours-only-field"><span>Hora de finalización *</span>{{ time_select('hora_fin', '', 'end') }}</label>
       <label class="field hours-only-field"><span>Cantidad de horas</span><span class="duration-control"><button type="button" data-duration-down aria-label="Restar media hora"><i class="bi bi-dash"></i></button><input type="number" value="1" min="0.5" max="16" step="0.5" data-duration-hours readonly><b>h</b><button type="button" data-duration-up aria-label="Sumar media hora"><i class="bi bi-plus"></i></button></span></label>

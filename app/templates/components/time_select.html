@@ -6,8 +6,8 @@
   </select>
   <b>:</b>
   <select data-time-minute required aria-label="Minutos">
-    <option value="" disabled {% if not value %}selected{% endif %}>Min</option>
-    <option value="00" {% if value and value[3:5] == '00' %}selected{% endif %}>00</option>
+    <option value="" disabled>Min</option>
+    <option value="00" {% if not value or value[3:5] == '00' %}selected{% endif %}>00</option>
     <option value="30" {% if value and value[3:5] == '30' %}selected{% endif %}>30</option>
   </select>
   <input type="hidden" name="{{ name }}" value="{{ value }}" {% if kind == 'start' %}data-start-time{% elif kind == 'end' %}data-end-time{% endif %}>

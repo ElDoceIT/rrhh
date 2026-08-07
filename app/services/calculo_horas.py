@@ -54,8 +54,6 @@ def clasificar_tipo_dia(fecha: date, db: Session) -> str:
     )
     if existe_feriado is not None:
         return "FERIADO"
-    if fecha.weekday() in (5, 6):
-        return "FRANCO"
     return "HABIL"
 
 
@@ -165,6 +163,7 @@ def calcular_resultado_horas_extra(
     hora_inicio: time,
     hora_fin: time,
     db: Session,
+    marcar_como_franco: bool = False,
 ) -> ResultadoHorasExtra:
     if fecha is None or hora_inicio is None or hora_fin is None:
         raise CalculoHorasError("La fecha, la hora de inicio y la hora de finalización son obligatorias.")
@@ -185,7 +184,7 @@ def calcular_resultado_horas_extra(
         raise CalculoHorasError("El usuario no tiene un convenio asignado.")
 
     horas_totales = calcular_horas_totales(hora_inicio, hora_fin)
-    tipo_dia = clasificar_tipo_dia(fecha, db)
+    tipo_dia = "FRANCO" if marcar_como_franco else clasificar_tipo_dia(fecha, db)
     regla = obtener_regla_horas(usuario.convenio, tipo_dia, db)
     horas_nocturnas = calcular_horas_nocturnas(
         hora_inicio,
@@ -225,8 +224,8 @@ def calcular_resultado_reintegro(
         raise CalculoHorasError("El usuario no tiene un convenio asignado.")
 
     tipo_dia = clasificar_tipo_dia(fecha, db)
-    if tipo_dia not in {"FRANCO", "FERIADO"}:
-        raise CalculoHorasError("El reintegro solo puede solicitarse para un día franco o feriado.")
+    if tipo_dia != "FERIADO":
+        tipo_dia = "FRANCO"
     regla = obtener_regla_horas(usuario.convenio, tipo_dia, db)
     if not regla.permite_reintegro:
         raise CalculoHorasError("La regla correspondiente a ese día no permite solicitar reintegro.")

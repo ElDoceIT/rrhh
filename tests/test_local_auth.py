@@ -22,9 +22,10 @@ from app.services.calculo_horas import (
     calcular_horas_totales,
     calcular_resultado_horas_extra,
     calcular_resultado_reintegro,
+    clasificar_tipo_dia,
     dividir_carga_en_fechas,
 )
-from app.services.access_catalog import PERFILES_DISPONIBLES, ROLES_DISPONIBLES
+from app.services.access_catalog import CONVENIOS_DISPONIBLES, PERFILES_DISPONIBLES, ROLES_DISPONIBLES
 from app.main import (
     ids_habilitados_para_confirmar,
     obtener_autorizador,
@@ -83,6 +84,7 @@ class LocalAuthTests(unittest.TestCase):
             "NOTICIERO", "RRHH", "TECNICA", "IT",
         ))
         self.assertEqual(PERFILES_DISPONIBLES, ("USUARIO", "JEFE"))
+        self.assertEqual(CONVENIOS_DISPONIBLES, ("CISPREN", "SAL", "SAT", "FC"))
 
     def test_session_contains_all_assignments_and_selects_one(self):
         with self.Session() as db:
@@ -107,7 +109,7 @@ class LocalAuthTests(unittest.TestCase):
             self.assertEqual(data["profile"], "JEFE")
             self.assertEqual(data["active_assignment_id"], data["assignments"][0]["id"])
 
-    def test_chief_can_load_self_and_users_from_active_role_only(self):
+    def test_chief_can_only_load_users_from_active_role(self):
         with self.Session() as db:
             jefe = Usuario(nombre="Jefa", apellido="Comercial", username="jefa", hashed_password="x", origen="AD", status=True)
             empleado = Usuario(nombre="Empleado", apellido="Comercial", username="empleado", hashed_password="x", origen="AD", status=True)
@@ -132,7 +134,7 @@ class LocalAuthTests(unittest.TestCase):
             })
             _, terceros = usuarios_habilitados_para_carga(request, db, "otro")
             self.assertEqual([item.id for item in terceros], [empleado.id])
-            self.assertEqual(ids_habilitados_para_confirmar(request, db), {jefe.id, empleado.id})
+            self.assertEqual(ids_habilitados_para_confirmar(request, db), {empleado.id})
             actor, assignment, is_admin = obtener_autorizador(request, db)
             self.assertEqual(actor.id, jefe.id)
             self.assertEqual(assignment.rol, "COMERCIAL")
@@ -197,6 +199,45 @@ class ReintegroTests(unittest.TestCase):
             self.assertIsNone(result.hora_inicio)
             self.assertIsNone(result.horas_totales)
             self.assertTrue(result.permite_reintegro)
+
+    def test_weekend_is_not_automatically_franco(self):
+        with self.Session() as db:
+            self.assertEqual(clasificar_tipo_dia(date(2026, 8, 8), db), "HABIL")
+            self.assertEqual(clasificar_tipo_dia(date(2026, 8, 9), db), "HABIL")
+
+    def test_hours_can_be_marked_as_franco_explicitly(self):
+        with self.Session() as db:
+            user = Usuario(
+                nombre="Ana", apellido="Pérez", username="aperez-franco",
+                hashed_password="x", origen="AD", convenio="SAT", status=True,
+            )
+            db.add_all([
+                user,
+                ReglaHora(convenio="SAT", tipo_dia="FRANCO", tipo_hora="100"),
+            ])
+            db.commit()
+            result = calcular_resultado_horas_extra(
+                user.id, date(2026, 8, 10), time(9, 0), time(10, 0), db,
+                marcar_como_franco=True,
+            )
+            self.assertEqual(result.tipo_dia, "FRANCO")
+
+    def test_reintegro_on_non_holiday_is_treated_as_franco(self):
+        with self.Session() as db:
+            user = Usuario(
+                nombre="Ana", apellido="Pérez", username="aperez-reintegro",
+                hashed_password="x", origen="AD", convenio="SAT", status=True,
+            )
+            db.add_all([
+                user,
+                ReglaHora(
+                    convenio="SAT", tipo_dia="FRANCO", tipo_hora="100",
+                    permite_reintegro=True,
+                ),
+            ])
+            db.commit()
+            result = calcular_resultado_reintegro(user.id, date(2026, 8, 10), db)
+            self.assertEqual(result.tipo_dia, "FRANCO")
 
     def test_crossing_midnight_creates_two_real_date_segments(self):
         segments = dividir_carga_en_fechas(

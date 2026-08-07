@@ -19,6 +19,15 @@ class ActiveDirectoryUser:
     distinguished_name: str
 
 
+@dataclass(frozen=True)
+class ActiveDirectoryGroupUser:
+    username: str
+    display_name: str
+    first_name: str
+    last_name: str
+    email: str | None
+
+
 def _env_bool(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
     if value is None:
@@ -54,15 +63,25 @@ def _bind_user() -> str:
     return bind_user
 
 
-def authenticate_ad_user(username: str, password: str) -> ActiveDirectoryUser:
-    username = username.strip()
-    if not username or not password:
-        raise ActiveDirectoryAuthError("Ingresá usuario y contraseña.")
-
-    login_attr = os.getenv("AD_LOGIN_ATTR", "sAMAccountName")
+def _configured_group_dn(connection: Connection) -> str:
     group_name = _required_env("AD_GROUP_NAME")
     base_dn = _required_env("AD_BASE_DN")
     groups_base_dn = os.getenv("AD_GROUPS_BASE_DN", base_dn)
+    escaped_group = escape_filter_chars(group_name)
+    connection.search(
+        groups_base_dn,
+        f"(&(objectClass=group)(cn={escaped_group}))",
+        attributes=["distinguishedName"],
+        size_limit=1,
+    )
+    if not connection.entries:
+        raise ActiveDirectoryAuthError("No se encontró el grupo habilitado en AD.")
+    return connection.entries[0].entry_dn
+
+
+def list_ad_group_users() -> list[ActiveDirectoryGroupUser]:
+    login_attr = os.getenv("AD_LOGIN_ATTR", "sAMAccountName")
+    base_dn = _required_env("AD_BASE_DN")
 
     try:
         with Connection(
@@ -72,16 +91,66 @@ def authenticate_ad_user(username: str, password: str) -> ActiveDirectoryUser:
             authentication=SIMPLE,
             auto_bind=True,
         ) as service_connection:
-            escaped_group = escape_filter_chars(group_name)
+            group_dn = _configured_group_dn(service_connection)
+            escaped_group_dn = escape_filter_chars(group_dn)
             service_connection.search(
-                groups_base_dn,
-                f"(&(objectClass=group)(cn={escaped_group}))",
-                attributes=["distinguishedName"],
-                size_limit=1,
+                base_dn,
+                (
+                    "(&"
+                    "(objectClass=user)"
+                    f"(memberOf:1.2.840.113556.1.4.1941:={escaped_group_dn})"
+                    ")"
+                ),
+                attributes=[login_attr, "displayName", "givenName", "sn", "mail"],
             )
-            if not service_connection.entries:
-                raise ActiveDirectoryAuthError("No se encontró el grupo habilitado en AD.")
-            group_dn = service_connection.entries[0].entry_dn
+            users: list[ActiveDirectoryGroupUser] = []
+            for entry in service_connection.entries:
+                username = str(entry[login_attr] or "").strip()
+                if not username:
+                    continue
+                display_name = str(entry.displayName or "").strip()
+                if not display_name:
+                    display_name = " ".join(
+                        part
+                        for part in (
+                            str(entry.givenName or "").strip(),
+                            str(entry.sn or "").strip(),
+                        )
+                        if part
+                    )
+                users.append(ActiveDirectoryGroupUser(
+                    username=username,
+                    display_name=display_name or username,
+                    first_name=str(entry.givenName or "").strip() or display_name or username,
+                    last_name=str(entry.sn or "").strip() or "-",
+                    email=str(entry.mail or "").strip() or None,
+                ))
+            return sorted(users, key=lambda user: (user.display_name.lower(), user.username.lower()))
+    except ActiveDirectoryAuthError:
+        raise
+    except LDAPException as error:
+        raise ActiveDirectoryAuthError(
+            "No se pudo consultar el grupo de Active Directory."
+        ) from error
+
+
+def authenticate_ad_user(username: str, password: str) -> ActiveDirectoryUser:
+    username = username.strip()
+    if not username or not password:
+        raise ActiveDirectoryAuthError("Ingresá usuario y contraseña.")
+
+    login_attr = os.getenv("AD_LOGIN_ATTR", "sAMAccountName")
+    base_dn = _required_env("AD_BASE_DN")
+
+    try:
+        with Connection(
+            _server(),
+            user=_bind_user(),
+            password=_required_env("AD_BIND_PASSWORD"),
+            authentication=SIMPLE,
+            auto_bind=True,
+        ) as service_connection:
+            group_dn = _configured_group_dn(service_connection)
 
             escaped_username = escape_filter_chars(username)
             escaped_group_dn = escape_filter_chars(group_dn)

@@ -8,6 +8,26 @@
   {% if guardado %}<div class="alert success"><i class="bi bi-check-circle-fill"></i> {{ guardado|capitalize }} correctamente.</div>{% endif %}
   {% if error %}<div class="alert error"><i class="bi bi-exclamation-triangle-fill"></i> {{ error }}.</div>{% endif %}
 
+  <section class="card">
+    <div class="section-heading section-heading-pill"><h2>Usuarios del grupo de Active Directory</h2>{% if usuarios_ad is not none %}<span class="count-chip">{{ usuarios_ad|length }}</span>{% endif %}</div>
+    <p class="muted">Consulta de sólo lectura del grupo configurado en <code>AD_GROUP_NAME</code>. No modifica usuarios de la aplicación.</p>
+    <div class="form-actions">
+      <a class="ui-btn" href="/configuracion/usuarios?consultar_ad=true"><i class="bi bi-arrow-clockwise"></i> Consultar usuarios de AD</a>
+      <a class="ui-btn primary-btn" href="/configuracion/usuarios/sincronizar"><i class="bi bi-person-add"></i> Sincronizar con AD</a>
+    </div>
+    {% if error_ad %}<div class="alert error"><i class="bi bi-exclamation-triangle-fill"></i> {{ error_ad }}</div>{% endif %}
+    {% if usuarios_ad %}
+    <div class="table-wrap"><table class="ui-table">
+      <thead><tr><th>Nombre</th><th>Usuario de red</th><th>Correo</th></tr></thead>
+      <tbody>{% for usuario_ad in usuarios_ad %}<tr>
+        <td data-label="Nombre"><strong>{{ usuario_ad.display_name }}</strong></td>
+        <td data-label="Usuario de red">{{ usuario_ad.username }}</td>
+        <td data-label="Correo">{{ usuario_ad.email or '—' }}</td>
+      </tr>{% endfor %}</tbody>
+    </table></div>
+    {% elif usuarios_ad is not none and not error_ad %}<div class="empty-state"><i class="bi bi-people"></i><strong>El grupo no tiene usuarios</strong><span>No se encontraron miembros habilitados en el grupo configurado.</span></div>{% endif %}
+  </section>
+
   <section class="card form-card" id="formulario-usuario">
     <div class="section-heading section-heading-pill"><h2>{% if usuario_edicion %}Editar usuario #{{ usuario_edicion.id }}{% else %}Nuevo usuario{% endif %}</h2><span class="count-chip">{{ usuarios|length }}</span></div>
     <form method="post" action="{% if usuario_edicion %}/configuracion/usuarios/{{ usuario_edicion.id }}{% else %}/configuracion/usuarios{% endif %}" class="user-form">
@@ -15,11 +35,11 @@
       <label class="field"><span>Nombre *</span><input name="nombre" maxlength="100" required value="{{ usuario_edicion.nombre if usuario_edicion else '' }}"></label>
       <label class="field"><span>Apellido *</span><input name="apellido" maxlength="100" required value="{{ usuario_edicion.apellido if usuario_edicion else '' }}"></label>
       <label class="field"><span>Correo</span><input type="email" name="correo" maxlength="150" placeholder="nombre@canal12.com.ar" value="{{ usuario_edicion.correo if usuario_edicion and usuario_edicion.correo else '' }}"></label>
-      <label class="field"><span>Convenio *</span><select name="convenio" required><option value="" disabled {% if not usuario_edicion or not usuario_edicion.convenio %}selected{% endif %}>Seleccionar</option>{% for convenio in convenios %}<option value="{{ convenio }}" {% if usuario_edicion and usuario_edicion.convenio == convenio %}selected{% endif %}>{{ convenio }}</option>{% endfor %}</select><small>Se obtiene de las reglas de horas configuradas.</small></label>
+      <label class="field"><span>Convenio *</span><select name="convenio" required><option value="" disabled {% if not usuario_edicion or not usuario_edicion.convenio %}selected{% endif %}>Seleccionar</option>{% for convenio in convenios %}<option value="{{ convenio }}" {% if usuario_edicion and usuario_edicion.convenio|upper == convenio %}selected{% endif %}>{{ convenio }}</option>{% endfor %}</select><small>Catálogo fijo de convenios habilitados.</small></label>
       <label class="field"><span>Contratación *</span><select name="id_tipo_contratacion" required><option value="" disabled {% if not usuario_edicion or not usuario_edicion.id_tipo_contratacion %}selected{% endif %}>Seleccionar</option>{% for tipo in tipos_contratacion %}<option value="{{ tipo.id_tipo_contratacion }}" {% if usuario_edicion and usuario_edicion.id_tipo_contratacion == tipo.id_tipo_contratacion %}selected{% endif %}>{{ tipo.id_tipo_contratacion }} · {{ tipo.contratacion }}</option>{% endfor %}</select></label>
       <label class="field"><span>Usuario *</span><input name="username" maxlength="100" autocomplete="username" required value="{{ usuario_edicion.username if usuario_edicion else '' }}"></label>
       <label class="field"><span>Contraseña {% if not usuario_edicion %}*{% endif %}</span><input type="password" name="password" minlength="8" autocomplete="new-password" {% if not usuario_edicion %}required{% endif %} placeholder="{% if usuario_edicion %}Dejar vacía para conservar{% else %}Mínimo 8 caracteres{% endif %}"></label>
-      <label class="field"><span>Origen *</span><select name="origen" required><option value="LOCAL" {% if not usuario_edicion or usuario_edicion.origen == 'LOCAL' %}selected{% endif %}>Local</option><option value="LDAP" {% if usuario_edicion and usuario_edicion.origen == 'LDAP' %}selected{% endif %}>LDAP</option><option value="IMPORTADO" {% if usuario_edicion and usuario_edicion.origen == 'IMPORTADO' %}selected{% endif %}>Importado</option></select></label>
+      <label class="field"><span>Origen *</span><select name="origen" required><option value="LOCAL" {% if not usuario_edicion or usuario_edicion.origen == 'LOCAL' %}selected{% endif %}>Local</option><option value="AD" {% if usuario_edicion and usuario_edicion.origen == 'AD' %}selected{% endif %}>AD</option><option value="LDAP" {% if usuario_edicion and usuario_edicion.origen == 'LDAP' %}selected{% endif %}>LDAP (anterior)</option><option value="IMPORTADO" {% if usuario_edicion and usuario_edicion.origen == 'IMPORTADO' %}selected{% endif %}>Importado</option></select></label>
       {% if not usuario_edicion %}
       <label class="field"><span>Rol inicial *</span><select name="rol" required><option value="" selected disabled>Seleccionar rol</option>{% for rol in roles_disponibles %}<option value="{{ rol }}">{{ rol|capitalize }}</option>{% endfor %}</select></label>
       <label class="field"><span>Perfil inicial *</span><select name="perfil" required>{% for perfil in perfiles_disponibles %}<option value="{{ perfil }}">{{ perfil|capitalize }}</option>{% endfor %}</select></label>

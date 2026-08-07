@@ -18,14 +18,14 @@
       <a class="home-button{% if active_page == 'inicio' %} active{% endif %}" href="/" aria-label="Inicio" title="Inicio"><i class="bi bi-house-door-fill"></i></a>
       <span class="nav-separator" aria-hidden="true"></span>
       {% if current_user and (current_user.role|upper == 'ADMIN' or current_user.profile|upper == 'JEFE') %}<a class="app-menu-link{% if active_page == 'autorizaciones' %} active{% endif %}" href="/autorizaciones">Autorizaciones</a><span class="nav-separator" aria-hidden="true"></span>{% endif %}
-      {% if current_user and current_user.role|upper == 'ADMIN' %}<div class="menu-dropdown">
+      {% if current_user and current_user.role|upper in ['ADMIN', 'RRHH'] %}<div class="menu-dropdown">
         <button class="app-menu-link dropdown-trigger{% if active_page in ['parametros', 'usuarios', 'feriados'] %} active{% endif %}" type="button">
           Configuración <i class="bi bi-chevron-down"></i>
         </button>
         <div class="dropdown-panel">
-          <a href="/configuracion/parametros"><i class="bi bi-sliders"></i> Parámetros</a>
+          {% if current_user.role|upper == 'ADMIN' %}<a href="/configuracion/parametros"><i class="bi bi-sliders"></i> Parámetros</a>{% endif %}
           <a href="/configuracion/usuarios"><i class="bi bi-people"></i> Usuarios y roles</a>
-          <a href="/configuracion/feriados"><i class="bi bi-calendar-event"></i> Feriados</a>
+          {% if current_user.role|upper == 'ADMIN' %}<a href="/configuracion/feriados"><i class="bi bi-calendar-event"></i> Feriados</a>{% endif %}
         </div>
       </div>{% endif %}
     </div>

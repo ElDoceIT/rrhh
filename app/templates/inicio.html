@@ -7,10 +7,9 @@
     <span class="eyebrow">{{ rol_activo|capitalize }}</span>
     <h1>¿Qué horas querés cargar?</h1>
     {% if es_jefe %}
-    <p>Podés registrar tus horas o cargar horas para un usuario de {{ rol_activo|capitalize }}.</p>
+    <p>Cargá horas para un usuario de {{ rol_activo|capitalize }}.</p>
     <div class="start-actions">
-      <a class="ui-btn primary-btn start-button" href="/solicitudes/nueva?destino=propio"><i class="bi bi-person-check"></i> Cargar mis horas</a>
-      <a class="ui-btn start-button" href="/solicitudes/nueva?destino=otro"><i class="bi bi-people"></i> Cargar horas a otro usuario</a>
+      <a class="ui-btn primary-btn start-button" href="/solicitudes/nueva?destino=otro"><i class="bi bi-people"></i> Cargar horas a otro usuario</a>
     </div>
     {% else %}
     <p>Registrá una nueva jornada de horas extras.</p>
