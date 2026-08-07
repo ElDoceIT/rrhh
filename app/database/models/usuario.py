@@ -74,26 +74,16 @@ class Usuario(Base):
         default="LOCAL",
     )
 
-    perfil: Mapped[str] = mapped_column(
-        String(20),
-        nullable=False,
-        default="USUARIO",
-    )
-
     status: Mapped[bool] = mapped_column(
         Boolean,
         nullable=False,
         default=True,
     )
 
-    id_rol: Mapped[int] = mapped_column(
-        ForeignKey("usuarios_roles.id_rol"),
-        nullable=False,
-        index=True,
-    )
-
-    rol: Mapped["UsuarioRol"] = relationship(
-        back_populates="usuarios",
+    roles: Mapped[list["UsuarioRol"]] = relationship(
+        back_populates="usuario",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
     )
 
     tipo_contratacion: Mapped["TipoContratacion | None"] = relationship(

@@ -39,7 +39,7 @@ def find_user(db: Session, username: str) -> Usuario | None:
         return None
     return db.scalar(
         select(Usuario)
-        .options(selectinload(Usuario.rol))
+        .options(selectinload(Usuario.roles))
         .where(func.lower(Usuario.username) == normalized)
     )
 
@@ -62,14 +62,21 @@ def authenticate_local_user(db: Session, username: str, password: str) -> Usuari
 
 
 def session_user(user: Usuario, source: str) -> dict:
+    assignments = [
+        {"id": item.id_rol, "role": item.rol, "profile": item.perfil}
+        for item in sorted(user.roles, key=lambda item: (item.rol, item.perfil))
+    ]
+    active = assignments[0] if assignments else None
     return {
+        "id": user.id,
         "username": user.username,
         "display_name": f"{user.nombre} {user.apellido}".strip() or user.username,
         "email": user.correo,
         "source": source,
-        "profile": user.perfil,
-        "role": user.rol.rol,
-        "permissions": user.rol.perfil,
+        "assignments": assignments,
+        "active_assignment_id": active["id"] if active else None,
+        "role": active["role"] if active else None,
+        "profile": active["profile"] if active else None,
     }
 
 
@@ -94,17 +101,6 @@ def seed_local_admin(db: Session) -> bool:
         logger.info("El administrador local %s ya existe; no se modificará.", username)
         return False
 
-    admin_role = db.scalar(
-        select(UsuarioRol).where(func.lower(UsuarioRol.rol) == "admin")
-    )
-    if admin_role is None:
-        admin_role = UsuarioRol(
-            rol="admin",
-            perfil="Acceso administrativo local de emergencia",
-        )
-        db.add(admin_role)
-        db.flush()
-
     user = Usuario(
         nombre=os.getenv("SEED_ADMIN_NOMBRE", "Admin").strip() or "Admin",
         apellido=os.getenv("SEED_ADMIN_APELLIDO", "Local").strip() or "Local",
@@ -112,11 +108,11 @@ def seed_local_admin(db: Session) -> bool:
         username=username,
         hashed_password=hash_password(password),
         origen="LOCAL",
-        perfil="USUARIO",
         status=True,
-        id_rol=admin_role.id_rol,
     )
     db.add(user)
+    db.flush()
+    db.add(UsuarioRol(usuario_id=user.id, rol="ADMIN", perfil="JEFE"))
     try:
         db.commit()
     except IntegrityError:
@@ -136,4 +132,3 @@ def initialize_seed_admin(session_factory) -> None:
             seed_local_admin(db)
     except SQLAlchemyError:
         logger.exception("No se pudo inicializar el administrador local de emergencia.")
-

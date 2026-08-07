@@ -8,6 +8,14 @@
   {% if guardado %}<div class="alert success"><i class="bi bi-check-circle-fill"></i> La regla fue {{ guardado }} correctamente.</div>{% endif %}
   {% if error %}<div class="alert error"><i class="bi bi-exclamation-triangle-fill"></i> {{ error }}</div>{% endif %}
 
+  <section class="card">
+    <div class="section-heading section-heading-pill"><div><span class="section-kicker">Accesos</span><h2>Roles y perfiles disponibles</h2></div><span class="count-chip">{{ roles_disponibles|length }}</span></div>
+    <p class="muted">Este catálogo es fijo. Las combinaciones se asignan desde la edición de cada usuario.</p>
+    <div class="access-catalog">
+      {% for rol in roles_disponibles %}<article class="role-item"><span class="role-icon"><i class="bi bi-shield-check"></i></span><span><strong>{{ rol|capitalize }}</strong><small>Perfiles: {% for perfil in perfiles_disponibles %}{{ perfil|capitalize }}{% if not loop.last %} · {% endif %}{% endfor %}</small></span></article>{% endfor %}
+    </div>
+  </section>
+
   <section class="card form-card" id="formulario-regla">
     <div class="section-heading section-heading-pill">
       <div><span class="section-kicker">Reglas de cálculo</span><h2>{% if regla_edicion %}Editar regla #{{ regla_edicion.id }}{% else %}Nueva regla{% endif %}</h2></div>

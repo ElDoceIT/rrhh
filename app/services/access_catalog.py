@@ -1,0 +1,13 @@
+ROLES_DISPONIBLES = (
+    "COMERCIAL",
+    "DIGITAL",
+    "REALIZACIONES",
+    "ADMIN",
+    "NOTICIERO",
+    "RRHH",
+    "TECNICA",
+    "IT",
+)
+
+PERFILES_DISPONIBLES = ("USUARIO", "JEFE")
+

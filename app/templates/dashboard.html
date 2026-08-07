@@ -2,32 +2,24 @@
 {% block title %}Horas cargadas{% endblock %}
 {% block content %}
 <div class="container">
-  <header class="page-header"><div><span class="eyebrow">Gestión</span><h1>Horas extras cargadas</h1><p>Período actual: {{ desde.strftime('%d/%m/%Y') }} al {{ hasta.strftime('%d/%m/%Y') }}.</p></div><a class="ui-btn primary-btn" href="/solicitudes/nueva"><i class="bi bi-plus-lg"></i> Cargar horas</a></header>
+  <header class="page-header"><div><span class="eyebrow">Mi actividad</span><h1>Historial de cargas</h1><p>Tus horas extras y solicitudes de reintegro.</p></div><a class="ui-btn primary-btn" href="/"><i class="bi bi-plus-lg"></i> Nueva carga</a></header>
   {% if guardado %}<div class="alert success"><i class="bi bi-check-circle-fill"></i> Se procesaron {{ guardado }} {{ 'carga' if guardado == 1 else 'cargas' }} correctamente.</div>{% endif %}
   {% if error %}<div class="alert error"><i class="bi bi-exclamation-triangle-fill"></i> {{ error }}</div>{% endif %}
 
-  <section class="result-summary dashboard-summary">
-    <article class="summary-card"><span>Cargas</span><strong>{{ horas|length }}</strong><small>en el período seleccionado</small></article>
-    <article class="summary-card"><span>Horas totales</span><strong>{{ '%.2f'|format(total_horas) }}</strong><small>horas extras cargadas</small></article>
-    <article class="summary-card"><span>Pendientes</span><strong>{{ cantidad_pendientes }}</strong><small>esperando autorización</small></article>
-    <article class="summary-card"><span>Autorizadas</span><strong>{{ cantidad_autorizadas }}</strong><small>aprobadas por un jefe</small></article>
-  </section>
-
   <section class="card">
-    <form method="get" action="/" class="dashboard-filters">
+    <form method="get" action="/horas" class="dashboard-filters">
       <div class="filter-capsule"><label for="estado">Estado</label><select id="estado" name="estado"><option value="">Todos</option><option value="PENDIENTE" {% if estado_filtro == 'PENDIENTE' %}selected{% endif %}>Pendientes</option><option value="APROBADA" {% if estado_filtro == 'APROBADA' %}selected{% endif %}>Autorizadas</option><option value="RECHAZADA" {% if estado_filtro == 'RECHAZADA' %}selected{% endif %}>Rechazadas</option></select></div>
-      <div class="filter-capsule grow"><label for="usuario_id">Usuario</label><select id="usuario_id" name="usuario_id"><option value="">Todos los usuarios</option>{% for usuario in usuarios %}<option value="{{ usuario.id }}" {% if usuario_filtro == usuario.id %}selected{% endif %}>{{ usuario.apellido }}, {{ usuario.nombre }}</option>{% endfor %}</select></div>
-      <button class="ui-btn primary-btn" type="submit"><i class="bi bi-funnel"></i> Aplicar</button>{% if estado_filtro or usuario_filtro %}<a class="ui-btn" href="/"><i class="bi bi-x-lg"></i> Limpiar</a>{% endif %}
+      <button class="ui-btn primary-btn" type="submit"><i class="bi bi-funnel"></i> Aplicar</button>{% if estado_filtro %}<a class="ui-btn" href="/horas"><i class="bi bi-x-lg"></i> Limpiar</a>{% endif %}
     </form>
   </section>
 
   <section class="card">
-    <div class="section-heading section-heading-pill"><h2>Solicitudes del período</h2><span class="count-chip">{{ horas|length }}</span></div>
+    <div class="section-heading section-heading-pill"><h2>Mis registros</h2><span class="count-chip">{{ horas|length }}</span></div>
     {% if horas %}<div class="table-wrap"><table class="ui-table">
       <thead><tr><th>Usuario</th><th>Fecha</th><th>Horario</th><th>Día</th><th>Tipo</th><th>Horas</th><th>Nocturnas</th><th>Reintegro</th><th>Observaciones</th><th>Estado</th></tr></thead>
       <tbody>{% for hora in horas %}<tr>
         <td data-label="Usuario"><span class="person-cell"><span class="avatar">{{ hora.usuario.nombre[0] }}{{ hora.usuario.apellido[0] }}</span><span><strong>{{ hora.usuario.apellido }}, {{ hora.usuario.nombre }}</strong><span class="cell-help">{{ hora.usuario.convenio }} · Legajo {{ hora.usuario.legajo or '—' }}</span></span></span></td>
-        <td data-label="Fecha"><strong>{{ hora.fecha.strftime('%d/%m/%Y') }}</strong></td><td data-label="Horario">{{ hora.hora_inicio.strftime('%H:%M') }} a {{ hora.hora_fin.strftime('%H:%M') }}</td><td data-label="Tipo de día">{{ hora.tipo_dia }}</td><td data-label="Tipo"><span class="type-chip">{{ hora.tipo_hora }}%</span></td><td data-label="Horas"><strong>{{ '%.2f'|format(hora.horas_totales) }}</strong></td><td data-label="Nocturnas">{{ '%.2f'|format(hora.horas_nocturnas) }}</td><td data-label="Reintegro">{% if hora.solicita_reintegro %}<span class="status-chip success-chip"><i class="bi bi-check"></i> Sí</span>{% else %}<span class="status-chip neutral-chip">No</span>{% endif %}</td><td data-label="Observaciones" class="observations">{{ hora.observaciones or '—' }}</td>
+        <td data-label="Fecha"><strong>{{ hora.fecha.strftime('%d/%m/%Y') }}</strong></td><td data-label="Horario">{% if hora.tipo_registro == 'REINTEGRO' %}<span class="muted">Solo reintegro</span>{% else %}{{ hora.hora_inicio.strftime('%H:%M') }} a {{ hora.hora_fin.strftime('%H:%M') }}{% endif %}</td><td data-label="Tipo de día">{{ hora.tipo_dia }}</td><td data-label="Tipo">{% if hora.tipo_hora %}<span class="type-chip">{{ hora.tipo_hora }}%</span>{% else %}—{% endif %}</td><td data-label="Horas"><strong>{{ '%.2f'|format(hora.horas_totales) if hora.horas_totales is not none else '—' }}</strong></td><td data-label="Nocturnas">{{ '%.2f'|format(hora.horas_nocturnas) if hora.horas_nocturnas is not none else '—' }}</td><td data-label="Reintegro">{% if hora.solicita_reintegro %}<span class="status-chip success-chip"><i class="bi bi-check"></i> Sí</span>{% else %}<span class="status-chip neutral-chip">No</span>{% endif %}</td><td data-label="Observaciones" class="observations">{{ hora.observaciones or '—' }}</td>
         <td data-label="Estado">{% if hora.estado == 'APROBADA' %}<span class="status-chip success-chip"><i class="bi bi-check-circle"></i> Autorizada</span>{% elif hora.estado == 'PENDIENTE' %}<span class="status-chip info-chip"><i class="bi bi-clock"></i> Pendiente</span>{% elif hora.estado == 'RECHAZADA' %}<span class="status-chip error-chip"><i class="bi bi-x-circle"></i> Rechazada</span>{% else %}<span class="status-chip neutral-chip">{{ hora.estado|capitalize }}</span>{% endif %}</td>
       </tr>{% endfor %}</tbody>
     </table></div>{% else %}<div class="empty-state"><i class="bi bi-clock-history"></i><strong>No hay horas para este filtro</strong><span>Cargá una nueva solicitud o modificá los filtros seleccionados.</span><a class="ui-btn primary-btn" href="/solicitudes/nueva"><i class="bi bi-plus-lg"></i> Cargar horas</a></div>{% endif %}

@@ -1,0 +1,15 @@
+{% macro time_select(name, value='', kind='') -%}
+<span class="time-select-control" data-time-select>
+  <select data-time-hour required aria-label="Hora">
+    <option value="" disabled {% if not value %}selected{% endif %}>Hora</option>
+    {% for hour in range(24) %}{% set hour_value = '%02d'|format(hour) %}<option value="{{ hour_value }}" {% if value and value[:2] == hour_value %}selected{% endif %}>{{ hour_value }}</option>{% endfor %}
+  </select>
+  <b>:</b>
+  <select data-time-minute required aria-label="Minutos">
+    <option value="" disabled {% if not value %}selected{% endif %}>Min</option>
+    <option value="00" {% if value and value[3:5] == '00' %}selected{% endif %}>00</option>
+    <option value="30" {% if value and value[3:5] == '30' %}selected{% endif %}>30</option>
+  </select>
+  <input type="hidden" name="{{ name }}" value="{{ value }}" {% if kind == 'start' %}data-start-time{% elif kind == 'end' %}data-end-time{% endif %}>
+</span>
+{%- endmacro %}

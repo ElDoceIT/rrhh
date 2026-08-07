@@ -1,46 +1,52 @@
 {% extends "base.html" %}
-{% block title %}Procesar solicitud{% endblock %}
+{% from "components/time_select.html" import time_select %}
+{% block title %}Revisar cargas{% endblock %}
 {% block content %}
 <div class="container">
-  <nav class="breadcrumb" aria-label="Migas de pan"><a href="/">Horas cargadas</a><i class="bi bi-chevron-right"></i><a href="/solicitudes/nueva">Nueva solicitud</a><i class="bi bi-chevron-right"></i><strong>Procesar solicitud</strong></nav>
-  <header class="page-header"><div><span class="eyebrow">Horas extras</span><h1>Detalle de la solicitud</h1><p>Agregá todas las jornadas necesarias y revisá sus cálculos en un único resumen.</p></div><a class="ui-btn" href="/solicitudes/nueva"><i class="bi bi-arrow-left"></i> Nueva solicitud</a></header>
+  <nav class="breadcrumb" aria-label="Migas de pan"><a href="/horas">Horas cargadas</a><i class="bi bi-chevron-right"></i><strong>Revisar cargas</strong></nav>
+  <header class="page-header"><div><span class="eyebrow">Borrador</span><h1>Revisar cargas</h1><p>Revisá las filas, agregá otras fechas y confirmá cuando termines.</p></div></header>
 
   {% if error %}<div class="alert error calculation-error"><i class="bi bi-exclamation-triangle-fill"></i><span><strong>No se pudo agregar la carga.</strong><br>{{ error }}</span></div>{% endif %}
 
   {% if resultados %}
-  <section class="result-summary">
-    <article class="summary-card"><span>Jornadas cargadas</span><strong>{{ resultados|length }}</strong><small>incluidas en la solicitud</small></article>
-    <article class="summary-card"><span>Horas totales</span><strong>{{ '%.2f'|format(total_horas) }}</strong><small>suma de horas extra</small></article>
-    <article class="summary-card"><span>Horas nocturnas</span><strong>{{ '%.2f'|format(total_nocturnas) }}</strong><small>resultado complementario</small></article>
-    <article class="summary-card"><span>Estado</span><strong class="summary-text">Calculada</strong><small>todavía sin guardar</small></article>
-  </section>
-
   <section class="card">
-    <div class="section-heading section-heading-pill"><h2>Solicitudes calculadas</h2><span class="heading-actions"><span class="count-chip">{{ resultados|length }}</span><button class="ui-btn icon-btn add-btn" id="show-add-request" type="button" aria-label="Agregar otra jornada" title="Agregar otra jornada"><i class="bi bi-plus-lg"></i></button></span></div>
-    <div class="table-wrap"><table class="ui-table">
-      <thead><tr><th>Usuario</th><th>Convenio</th><th>Fecha</th><th>Horario</th><th>Día</th><th>Tipo</th><th>Horas</th><th>Nocturnas</th><th>Reintegro</th><th>Observaciones</th></tr></thead>
-      <tbody>{% for resultado in resultados %}<tr>
-        <td data-label="Usuario"><span class="person-cell"><span class="avatar"><i class="bi bi-person"></i></span><span><strong>{{ resultado.usuario_nombre }}</strong><span class="cell-help">Legajo {{ resultado.legajo or '—' }}</span></span></span></td>
-        <td data-label="Convenio"><span class="type-chip">{{ resultado.convenio }}</span></td><td data-label="Fecha">{{ resultado.fecha.strftime('%d/%m/%Y') }}</td><td data-label="Horario">{{ resultado.hora_inicio.strftime('%H:%M') }} a {{ resultado.hora_fin.strftime('%H:%M') }}</td><td data-label="Tipo de día"><strong>{{ resultado.tipo_dia }}</strong></td><td data-label="Tipo de hora"><span class="status-chip info-chip">{{ resultado.tipo_hora }}%</span></td><td data-label="Horas"><strong>{{ '%.2f'|format(resultado.horas_totales) }}</strong></td><td data-label="Nocturnas"><strong>{{ '%.2f'|format(resultado.horas_nocturnas) }}</strong></td><td data-label="Reintegro">{% if resultado.permite_reintegro %}<label class="compact-select"><span class="sr-only">Reintegro para {{ resultado.usuario_nombre }} del {{ resultado.fecha.strftime('%d/%m/%Y') }}</span><select class="reintegro-select" data-reintegro-index="{{ loop.index0 }}" aria-label="Seleccionar reintegro"><option value="NO" {% if reintegros[loop.index0] == 'NO' %}selected{% endif %}>No</option><option value="SI" {% if reintegros[loop.index0] == 'SI' %}selected{% endif %}>Sí</option></select></label>{% else %}<span class="status-chip neutral-chip"><i class="bi bi-x"></i> No permitido</span>{% endif %}</td><td data-label="Observaciones" class="observations">{{ observaciones_resultados[loop.index0] or '—' }}</td>
+    <div class="section-heading section-heading-pill"><h2>Cargas pendientes de procesar</h2><span class="count-chip" id="draft-count">{{ resultados|length }}</span></div>
+    <div class="table-wrap"><table class="ui-table draft-table">
+      <thead><tr><th>Usuario</th><th>Registro</th><th>Fecha</th><th>Horario</th><th>Día</th><th>Horas</th><th>Reintegro</th><th>Observaciones</th><th class="actions-column">Acción</th></tr></thead>
+      <tbody>{% for resultado in resultados %}<tr data-draft-row="{{ loop.index0 }}">
+        <td data-label="Usuario"><strong>{{ resultado.usuario_nombre }}</strong><span class="cell-help">Legajo {{ resultado.legajo or '—' }}</span></td>
+        <td data-label="Registro"><span class="type-chip">{{ 'Reintegro' if resultado.tipo_registro == 'REINTEGRO' else 'Horas extras' }}</span></td>
+        <td data-label="Fecha"><strong>{{ resultado.fecha.strftime('%d/%m/%Y') }}</strong></td>
+        <td data-label="Horario">{% if resultado.tipo_registro == 'REINTEGRO' %}<span class="muted">—</span>{% else %}{{ resultado.hora_inicio.strftime('%H:%M') }} a {{ resultado.hora_fin.strftime('%H:%M') }}{% endif %}</td>
+        <td data-label="Día">{{ resultado.tipo_dia|capitalize }}</td>
+        <td data-label="Horas"><strong>{{ '%.2f'|format(resultado.horas_totales) if resultado.horas_totales is not none else '—' }}</strong></td>
+        <td data-label="Reintegro">{% if resultado.tipo_registro == 'REINTEGRO' %}<span class="status-chip success-chip">Solicitado</span>{% elif resultado.permite_reintegro %}<label class="compact-select"><span class="sr-only">Reintegro para la fila {{ loop.index }}</span><select class="reintegro-select" data-reintegro-index="{{ loop.index0 }}"><option value="NO" {% if reintegros[loop.index0] == 'NO' %}selected{% endif %}>No</option><option value="SI" {% if reintegros[loop.index0] == 'SI' %}selected{% endif %}>Sí</option></select></label>{% else %}<span class="muted">No permitido</span>{% endif %}</td>
+        <td data-label="Observaciones" class="observations">{{ observaciones_resultados[loop.index0] or '—' }}</td>
+        <td data-label="Acción" class="actions-column"><button class="ui-btn icon-btn danger-btn remove-draft" type="button" data-draft-index="{{ loop.index0 }}" aria-label="Eliminar carga" title="Eliminar"><i class="bi bi-trash"></i></button></td>
       </tr>{% endfor %}</tbody>
     </table></div>
   </section>
 
-  <section class="card add-request-card{% if not error %} hidden{% endif %}" id="add-request-panel">
-    <div class="section-heading section-heading-pill"><h2>Agregar otra jornada</h2><button class="ui-btn icon-btn" id="hide-add-request" type="button" aria-label="Cerrar formulario" title="Cerrar"><i class="bi bi-x-lg"></i></button></div>
+  <section class="card form-card add-request-card">
+    <div class="section-heading section-heading-pill"><h2>Agregar otra fecha</h2></div>
     <form method="post" action="/solicitudes/procesar" class="request-form" id="add-request-form">
-      {% for carga in cargas %}<input type="hidden" name="cargas" value="{{ carga }}">{% endfor %}
-      {% for reintegro in reintegros %}<input type="hidden" name="reintegros" value="{{ reintegro }}" data-reintegro-index="{{ loop.index0 }}">{% endfor %}
-      <label class="field field-user"><span>Usuario *</span><select name="usuario_id" required><option value="" selected disabled>Seleccionar usuario</option>{% for usuario in usuarios %}<option value="{{ usuario.id }}">{{ usuario.apellido }}, {{ usuario.nombre }}{% if usuario.legajo %} · Legajo {{ usuario.legajo }}{% endif %}</option>{% endfor %}</select></label>
-      <label class="field"><span>Fecha *</span><input type="date" name="fecha" value="{{ fecha_hoy }}" required></label><label class="field"><span>Hora de inicio *</span><input type="time" name="hora_inicio" required></label><label class="field"><span>Hora de finalización *</span><input type="time" name="hora_fin" required></label>
-      <label class="field request-observations"><span>Observaciones</span><textarea name="observaciones" rows="3" placeholder="Información adicional de esta jornada (opcional)"></textarea></label>
-      <div class="request-actions"><button class="ui-btn primary-btn process-btn" type="submit"><i class="bi bi-plus-lg"></i> Agregar jornada</button></div>
+      <input type="hidden" name="destino" value="{{ destino }}">
+      {% for carga in cargas %}<input type="hidden" name="cargas" value="{{ carga }}" data-draft-index="{{ loop.index0 }}">{% endfor %}
+      {% for reintegro in reintegros %}<input type="hidden" name="reintegros" value="{{ reintegro }}" data-reintegro-index="{{ loop.index0 }}" data-draft-index="{{ loop.index0 }}">{% endfor %}
+      {% if usuario_fijo %}<input type="hidden" name="usuario_id" value="{{ usuario_fijo.id }}">{% else %}<label class="field field-user"><span>Usuario *</span><select name="usuario_id" required><option value="" selected disabled>Seleccionar usuario</option>{% for usuario in usuarios %}<option value="{{ usuario.id }}">{{ usuario.apellido }}, {{ usuario.nombre }}{% if usuario.legajo %} · Legajo {{ usuario.legajo }}{% endif %}</option>{% endfor %}</select></label>{% endif %}
+      <fieldset class="record-type-selector"><legend>Tipo de registro</legend><label><input type="radio" name="tipo_registro" value="HORAS" checked> Horas extras</label><label><input type="radio" name="tipo_registro" value="REINTEGRO"> Solo reintegro</label></fieldset>
+      <label class="field"><span>Fecha *</span><input type="date" name="fecha" value="{{ fecha_hoy }}" required></label>
+      <label class="field hours-only-field"><span>Hora de inicio *</span>{{ time_select('hora_inicio', '', 'start') }}</label>
+      <label class="field hours-only-field"><span>Hora de finalización *</span>{{ time_select('hora_fin', '', 'end') }}</label>
+      <label class="field hours-only-field"><span>Cantidad de horas</span><span class="duration-control"><button type="button" data-duration-down aria-label="Restar media hora"><i class="bi bi-dash"></i></button><input type="number" value="1" min="0.5" max="16" step="0.5" data-duration-hours readonly><b>h</b><button type="button" data-duration-up aria-label="Sumar media hora"><i class="bi bi-plus"></i></button></span></label>
+      <label class="field request-observations"><span>Observaciones</span><textarea name="observaciones" rows="2" placeholder="Opcional"></textarea></label>
+      <div class="request-actions"><button class="ui-btn" type="submit"><i class="bi bi-plus-lg"></i> Agregar a la tabla</button></div>
     </form>
   </section>
 
-  <section class="batch-actions"><span><strong>Todo listo para guardar.</strong><small>Al procesar, las cargas quedarán con estado Pendiente.</small></span><form method="post" action="/solicitudes/confirmar" id="confirm-batch-form">{% for carga in cargas %}<input type="hidden" name="cargas" value="{{ carga }}">{% endfor %}{% for reintegro in reintegros %}<input type="hidden" name="reintegros" value="{{ reintegro }}" data-reintegro-index="{{ loop.index0 }}">{% endfor %}<button class="ui-btn primary-btn process-btn" type="submit"><i class="bi bi-check2-circle"></i> Procesar solicitud</button></form></section>
+  <section class="batch-actions" id="draft-actions"><span><strong><span id="draft-action-count">{{ resultados|length }}</span> {{ 'registro listo' if resultados|length == 1 else 'registros listos' }}</strong><small>Los datos todavía no fueron guardados.</small></span><form method="post" action="/solicitudes/confirmar" id="confirm-batch-form">{% for carga in cargas %}<input type="hidden" name="cargas" value="{{ carga }}" data-draft-index="{{ loop.index0 }}">{% endfor %}{% for reintegro in reintegros %}<input type="hidden" name="reintegros" value="{{ reintegro }}" data-reintegro-index="{{ loop.index0 }}" data-draft-index="{{ loop.index0 }}">{% endfor %}<button class="ui-btn primary-btn process-btn" type="submit"><i class="bi bi-check2-circle"></i> Confirmar y procesar</button></form></section>
   {% else %}
-  <section class="empty-state"><i class="bi bi-exclamation-circle"></i><strong>No hay jornadas válidas en esta solicitud</strong><span>Volvé al formulario para corregir los datos.</span><a class="ui-btn" href="/solicitudes/nueva"><i class="bi bi-arrow-left"></i> Volver a cargar</a></section>
+  <section class="empty-state"><i class="bi bi-exclamation-circle"></i><strong>No hay cargas válidas</strong><span>Volvé a la pantalla anterior para iniciar un nuevo borrador.</span><a class="ui-btn" href="/solicitudes/nueva?destino={{ destino }}"><i class="bi bi-arrow-left"></i> Volver</a></section>
   {% endif %}
 </div>
 {% endblock %}

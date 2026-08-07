@@ -40,19 +40,19 @@ class HoraExtra(Base):
         index=True,
     )
 
-    hora_inicio: Mapped[time] = mapped_column(
+    hora_inicio: Mapped[time | None] = mapped_column(
         Time,
-        nullable=False,
+        nullable=True,
     )
 
-    hora_fin: Mapped[time] = mapped_column(
+    hora_fin: Mapped[time | None] = mapped_column(
         Time,
-        nullable=False,
+        nullable=True,
     )
 
-    horas_totales: Mapped[Decimal] = mapped_column(
+    horas_totales: Mapped[Decimal | None] = mapped_column(
         Numeric(5, 2),
-        nullable=False,
+        nullable=True,
     )
 
     tipo_dia: Mapped[str] = mapped_column(
@@ -60,15 +60,21 @@ class HoraExtra(Base):
         nullable=False,
     )
 
-    tipo_hora: Mapped[str] = mapped_column(
+    tipo_hora: Mapped[str | None] = mapped_column(
         String(20),
-        nullable=False,
+        nullable=True,
     )
 
-    horas_nocturnas: Mapped[Decimal] = mapped_column(
+    horas_nocturnas: Mapped[Decimal | None] = mapped_column(
         Numeric(5, 2),
-        nullable=False,
+        nullable=True,
         default=Decimal("0.00"),
+    )
+
+    tipo_registro: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="HORAS",
     )
 
     solicita_reintegro: Mapped[bool] = mapped_column(

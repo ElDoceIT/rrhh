@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING
 
-from sqlalchemy import String, Text
+from sqlalchemy import ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.connection import Base
@@ -11,23 +11,31 @@ if TYPE_CHECKING:
 
 class UsuarioRol(Base):
     __tablename__ = "usuarios_roles"
+    __table_args__ = (
+        UniqueConstraint("usuario_id", "rol", "perfil", name="uq_usuarios_roles_usuario_rol_perfil"),
+    )
 
     id_rol: Mapped[int] = mapped_column(
         primary_key=True,
         autoincrement=True,
     )
 
+    usuario_id: Mapped[int] = mapped_column(
+        ForeignKey("usuarios.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
     rol: Mapped[str] = mapped_column(
         String(50),
-        unique=True,
         nullable=False,
     )
 
-    perfil: Mapped[str | None] = mapped_column(
-        Text,
-        nullable=True,
+    perfil: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
     )
 
-    usuarios: Mapped[list["Usuario"]] = relationship(
-        back_populates="rol",
+    usuario: Mapped["Usuario"] = relationship(
+        back_populates="roles",
     )

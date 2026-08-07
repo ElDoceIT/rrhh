@@ -1,22 +1,26 @@
 {% extends "base.html" %}
+{% from "components/time_select.html" import time_select %}
 {% block title %}Nueva solicitud{% endblock %}
 {% block content %}
 <div class="container request-page">
-  <header class="page-header"><div><span class="eyebrow">Horas extras</span><h1>Nueva solicitud</h1><p>Ingresá la persona y el período trabajado para iniciar el cálculo.</p></div></header>
+  <header class="page-header"><div><span class="eyebrow">Horas extras</span><h1>Nueva solicitud</h1></div></header>
 
   {% if error %}<div class="alert error"><i class="bi bi-exclamation-triangle-fill"></i> {{ error }}</div>{% endif %}
 
   <section class="card request-card">
     <div class="request-intro">
-      <span class="request-icon"><i class="bi bi-clock-history"></i></span>
-      <div><h2>Cargar horas trabajadas</h2><p>Los datos se mostrarán en una solicitud antes de confirmar su registro.</p></div>
+      <div class="request-intro-title"><span class="request-icon"><i class="bi bi-clock-history"></i></span><div><h2>Cargar horas trabajadas</h2><p>Los datos se mostrarán en una solicitud antes de confirmar su registro.</p></div></div>
+      <div class="loading-user"><span>Usuario de carga</span><strong><i class="bi bi-person-circle"></i> {{ request.session.get('user', {}).get('display_name', '') }}</strong></div>
     </div>
     {% if usuarios %}
     <form method="post" action="/solicitudes/procesar" class="request-form">
-      <label class="field field-user"><span>Usuario *</span><select name="usuario_id" required><option value="" selected disabled>Seleccionar usuario</option>{% for usuario in usuarios %}<option value="{{ usuario.id }}">{{ usuario.apellido }}, {{ usuario.nombre }}{% if usuario.legajo %} · Legajo {{ usuario.legajo }}{% endif %}</option>{% endfor %}</select><small>Solo se muestran usuarios activos.</small></label>
+      <input type="hidden" name="destino" value="{{ destino }}">
+      {% if usuario_fijo %}<input type="hidden" name="usuario_id" value="{{ usuario_fijo.id }}">{% else %}<label class="field field-user"><span>Usuario *</span><select name="usuario_id" required><option value="" selected disabled>Seleccionar usuario</option>{% for usuario in usuarios %}<option value="{{ usuario.id }}">{{ usuario.apellido }}, {{ usuario.nombre }}{% if usuario.legajo %} · Legajo {{ usuario.legajo }}{% endif %}</option>{% endfor %}</select><small>Usuarios con perfil Usuario dentro de tu rol activo.</small></label>{% endif %}
+      <fieldset class="record-type-selector"><legend>¿Qué querés registrar?</legend><label><input type="radio" name="tipo_registro" value="HORAS" checked> Horas extras</label><label><input type="radio" name="tipo_registro" value="REINTEGRO"> Solo reintegro del día</label></fieldset>
       <label class="field"><span>Fecha *</span><input type="date" name="fecha" value="{{ fecha_hoy }}" required></label>
-      <label class="field"><span>Hora de inicio *</span><input type="time" name="hora_inicio" required></label>
-      <label class="field"><span>Hora de finalización *</span><input type="time" name="hora_fin" required></label>
+      <label class="field hours-only-field"><span>Hora de inicio *</span>{{ time_select('hora_inicio', '', 'start') }}</label>
+      <label class="field hours-only-field"><span>Hora de finalización *</span>{{ time_select('hora_fin', '', 'end') }}</label>
+      <label class="field hours-only-field"><span>Cantidad de horas</span><span class="duration-control"><button type="button" data-duration-down aria-label="Restar media hora"><i class="bi bi-dash"></i></button><input type="number" value="1" min="0.5" max="16" step="0.5" data-duration-hours readonly aria-label="Cantidad de horas"><b>h</b><button type="button" data-duration-up aria-label="Sumar media hora"><i class="bi bi-plus"></i></button></span><small>Completa automáticamente la hora final.</small></label>
       <label class="field request-observations"><span>Observaciones</span><textarea name="observaciones" rows="3" placeholder="Información adicional de esta jornada (opcional)"></textarea></label>
       <div class="request-actions"><button class="ui-btn primary-btn process-btn" type="submit"><i class="bi bi-calculator"></i> Procesar solicitud <i class="bi bi-arrow-right"></i></button></div>
     </form>

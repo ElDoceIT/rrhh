@@ -10,14 +10,20 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
 
 from app.database.connection import SessionLocal, engine, get_db
 from app.database.models import Feriado, HoraExtra, ReglaHora, TipoContratacion, Usuario, UsuarioRol
 from app.services.ad_auth import ActiveDirectoryAuthError, authenticate_ad_user
-from app.services.calculo_horas import CalculoHorasError, calcular_resultado_horas_extra
+from app.services.access_catalog import PERFILES_DISPONIBLES, ROLES_DISPONIBLES
+from app.services.calculo_horas import (
+    CalculoHorasError,
+    calcular_resultado_horas_extra,
+    calcular_resultado_reintegro,
+    dividir_carga_en_fechas,
+)
 from app.services.local_auth import (
     authenticate_local_user,
     find_user,
@@ -45,11 +51,15 @@ PUBLIC_PATHS = {"/login", "/health", "/health/db", "/health/database"}
 @app.middleware("http")
 async def require_login(request: Request, call_next):
     path = request.url.path
-    if (
-        path.startswith("/static/")
-        or path in PUBLIC_PATHS
-        or request.session.get("user") is not None
-    ):
+    if path.startswith("/static/") or path in PUBLIC_PATHS:
+        return await call_next(request)
+    session_user_data = request.session.get("user")
+    if session_user_data is not None:
+        if (
+            path.startswith("/configuracion")
+            and str(session_user_data.get("role") or "").upper() != "ADMIN"
+        ):
+            return HTMLResponse("Acceso denegado: se requiere el rol ADMIN.", status_code=403)
         return await call_next(request)
     return RedirectResponse(f"/login?next={quote(path, safe='/')}", status_code=303)
 
@@ -107,34 +117,98 @@ def safe_next_url(value: str | None) -> str:
     return value
 
 
+def usuarios_habilitados_para_carga(
+    request: Request,
+    db: Session,
+    destino: str | None = None,
+) -> tuple[UsuarioRol, list[Usuario]]:
+    session_data = request.session.get("user") or {}
+    assignment = db.scalar(
+        select(UsuarioRol).where(
+            UsuarioRol.id_rol == session_data.get("active_assignment_id"),
+            UsuarioRol.usuario_id == session_data.get("id"),
+        )
+    )
+    if assignment is None:
+        raise HTTPException(status_code=403, detail="Seleccioná un rol y perfil activo para cargar horas.")
+
+    current_user = db.get(Usuario, assignment.usuario_id)
+    if current_user is None or not current_user.status:
+        raise HTTPException(status_code=403, detail="El usuario activo no está habilitado.")
+
+    if assignment.perfil.upper() != "JEFE" or destino != "otro":
+        return assignment, [current_user]
+
+    usuarios = list(db.scalars(
+        select(Usuario)
+        .join(Usuario.roles)
+        .where(
+            Usuario.status.is_(True),
+            Usuario.id != current_user.id,
+            func.upper(UsuarioRol.rol) == assignment.rol.upper(),
+            func.upper(UsuarioRol.perfil) == "USUARIO",
+        )
+        .distinct()
+        .order_by(Usuario.apellido, Usuario.nombre)
+    ))
+    return assignment, usuarios
+
+
+def ids_habilitados_para_confirmar(request: Request, db: Session) -> set[int]:
+    assignment, propios = usuarios_habilitados_para_carga(request, db)
+    permitidos = {item.id for item in propios}
+    if assignment.perfil.upper() == "JEFE":
+        _, terceros = usuarios_habilitados_para_carga(request, db, "otro")
+        permitidos.update(item.id for item in terceros)
+    return permitidos
+
+
 def encode_carga(
     usuario_id: int,
     fecha: date,
-    hora_inicio: time,
-    hora_fin: time,
+    hora_inicio: time | None,
+    hora_fin: time | None,
     observaciones: str | None,
+    tipo_registro: str = "HORAS",
 ) -> str:
     return "|".join((
         str(usuario_id),
         fecha.isoformat(),
-        hora_inicio.strftime("%H:%M"),
-        hora_fin.strftime("%H:%M"),
+        hora_inicio.strftime("%H:%M") if hora_inicio else "",
+        hora_fin.strftime("%H:%M") if hora_fin else "",
         quote(clean_optional(observaciones) or "", safe=""),
+        tipo_registro,
     ))
 
 
-def decode_carga(value: str) -> tuple[int, date, time, time, str | None]:
+def decode_carga(value: str) -> tuple[int, date, time | None, time | None, str | None, str]:
     try:
-        usuario_id, fecha, hora_inicio, hora_fin, observaciones = value.split("|", maxsplit=4)
+        partes = value.split("|", maxsplit=5)
+        if len(partes) == 5:
+            partes.append("HORAS")
+        usuario_id, fecha, hora_inicio, hora_fin, observaciones, tipo_registro = partes
+        tipo_registro = tipo_registro.strip().upper()
+        if tipo_registro not in {"HORAS", "REINTEGRO"}:
+            raise ValueError
         return (
             int(usuario_id),
             date.fromisoformat(fecha),
-            time.fromisoformat(hora_inicio),
-            time.fromisoformat(hora_fin),
+            time.fromisoformat(hora_inicio) if hora_inicio else None,
+            time.fromisoformat(hora_fin) if hora_fin else None,
             clean_optional(unquote(observaciones)),
+            tipo_registro,
         )
     except (TypeError, ValueError) as error:
         raise CalculoHorasError("La solicitud contiene una carga con formato inválido.") from error
+
+
+def calcular_carga_codificada(datos, db: Session):
+    usuario_id, fecha, hora_inicio, hora_fin, _, tipo_registro = datos
+    if tipo_registro == "REINTEGRO":
+        return calcular_resultado_reintegro(usuario_id, fecha, db)
+    if hora_inicio is None or hora_fin is None:
+        raise CalculoHorasError("La carga de horas no contiene un horario válido.")
+    return calcular_resultado_horas_extra(usuario_id, fecha, hora_inicio, hora_fin, db)
 
 
 def periodo_corte(fecha_referencia: date) -> tuple[date, date]:
@@ -154,24 +228,40 @@ def periodo_corte(fecha_referencia: date) -> tuple[date, date]:
     return desde, hasta
 
 
-def obtener_jefe(jefe_id: int, db: Session) -> Usuario:
-    jefe = db.get(Usuario, jefe_id)
-    if jefe is None or not jefe.status or jefe.perfil != "JEFE":
+def obtener_autorizador(request: Request, db: Session) -> tuple[Usuario, UsuarioRol, bool]:
+    session_data = request.session.get("user") or {}
+    asignacion = db.scalar(
+        select(UsuarioRol).where(
+            UsuarioRol.id_rol == session_data.get("active_assignment_id"),
+            UsuarioRol.usuario_id == session_data.get("id"),
+        )
+    )
+    usuario = db.scalar(
+        select(Usuario)
+        .options(selectinload(Usuario.roles))
+        .where(Usuario.id == session_data.get("id"))
+    )
+    es_admin = asignacion is not None and asignacion.rol.upper() == "ADMIN"
+    if usuario is None or asignacion is None or not usuario.status or (
+        not es_admin and asignacion.perfil.upper() != "JEFE"
+    ):
         raise HTTPException(
             status_code=403,
-            detail="El usuario seleccionado no está habilitado como jefe.",
+            detail="No tenés permisos para acceder a las autorizaciones.",
         )
-    return jefe
+    return usuario, asignacion, es_admin
 
 
-def validar_hora_para_jefe(
+def validar_hora_para_autorizador(
     hora: HoraExtra | None,
-    jefe: Usuario,
+    asignacion: UsuarioRol,
+    es_admin: bool,
     requiere_pendiente: bool = True,
 ) -> HoraExtra:
     if hora is None:
         raise HTTPException(status_code=404, detail="La carga de horas no existe.")
-    if hora.usuario.id_rol != jefe.id_rol:
+    roles_usuario = {item.rol.upper() for item in hora.usuario.roles}
+    if not es_admin and asignacion.rol.upper() not in roles_usuario:
         raise HTTPException(
             status_code=403,
             detail="No podés administrar horas de usuarios con otro rol.",
@@ -260,48 +350,99 @@ def logout(request: Request):
     return RedirectResponse("/login", status_code=303)
 
 
+@app.post("/sesion/asignacion")
+def cambiar_asignacion(
+    request: Request,
+    asignacion_id: Annotated[int, Form()],
+    db: Session = Depends(get_db),
+):
+    session_data = request.session.get("user")
+    if not session_data:
+        return RedirectResponse("/login", status_code=303)
+    assignment = db.scalar(
+        select(UsuarioRol).where(
+            UsuarioRol.id_rol == asignacion_id,
+            UsuarioRol.usuario_id == session_data.get("id"),
+        )
+    )
+    if assignment is None:
+        raise HTTPException(status_code=403, detail="La asignación no pertenece al usuario activo.")
+    session_data["active_assignment_id"] = assignment.id_rol
+    session_data["role"] = assignment.rol
+    session_data["profile"] = assignment.perfil
+    request.session["user"] = session_data
+    return RedirectResponse("/", status_code=303)
+
+
 @app.get("/", response_class=HTMLResponse)
+def inicio(request: Request, db: Session = Depends(get_db)):
+    assignment, _ = usuarios_habilitados_para_carga(request, db)
+    pendientes = db.scalar(
+        select(func.count(HoraExtra.id)).where(
+            HoraExtra.usuario_id == assignment.usuario_id,
+            HoraExtra.estado == "PENDIENTE",
+        )
+    ) or 0
+    es_admin = assignment.rol.upper() == "ADMIN"
+    es_jefe = assignment.perfil.upper() == "JEFE"
+    autorizaciones_pendientes = 0
+    if es_admin:
+        autorizaciones_pendientes = db.scalar(
+            select(func.count(HoraExtra.id)).where(HoraExtra.estado == "PENDIENTE")
+        ) or 0
+    elif es_jefe:
+        autorizaciones_pendientes = db.scalar(
+            select(func.count(HoraExtra.id))
+            .join(HoraExtra.usuario)
+            .where(
+                HoraExtra.estado == "PENDIENTE",
+                Usuario.id != assignment.usuario_id,
+                Usuario.roles.any(
+                    func.upper(UsuarioRol.rol) == assignment.rol.upper()
+                ),
+            )
+        ) or 0
+    return templates.TemplateResponse(request, "inicio.html", {
+        "active_page": "inicio",
+        "es_jefe": es_jefe,
+        "es_admin": es_admin,
+        "rol_activo": assignment.rol,
+        "cargas_pendientes": pendientes,
+        "autorizaciones_pendientes": autorizaciones_pendientes,
+    })
+
+
+@app.get("/horas", response_class=HTMLResponse)
 def home(
     request: Request,
     estado: str | None = None,
-    usuario_id: int | None = None,
     guardado: int | None = None,
     db: Session = Depends(get_db),
 ):
-    desde, hasta = periodo_corte(date.today())
     horas: list[HoraExtra] = []
-    usuarios: list[Usuario] = []
+    session_user_id = (request.session.get("user") or {}).get("id")
+    if not session_user_id:
+        raise HTTPException(status_code=403, detail="La sesión no contiene un usuario válido.")
     error = None
     try:
-        usuarios = list(db.scalars(
-            select(Usuario)
-            .where(Usuario.status.is_(True))
-            .order_by(Usuario.apellido, Usuario.nombre)
-        ))
         consulta = (
             select(HoraExtra)
             .options(selectinload(HoraExtra.usuario), selectinload(HoraExtra.aprobador))
-            .where(HoraExtra.fecha >= desde, HoraExtra.fecha <= hasta)
+            .where(HoraExtra.usuario_id == session_user_id)
             .order_by(HoraExtra.fecha.desc(), HoraExtra.hora_inicio.desc())
         )
         if estado:
             consulta = consulta.where(HoraExtra.estado == estado)
-        if usuario_id is not None:
-            consulta = consulta.where(HoraExtra.usuario_id == usuario_id)
         horas = list(db.scalars(consulta))
     except SQLAlchemyError:
         error = "No se pudieron cargar las horas extras. Verificá la conexión con la base."
     return templates.TemplateResponse(request, "dashboard.html", {
-        "active_page": "home",
+        "active_page": "horas",
         "horas": horas,
-        "usuarios": usuarios,
-        "desde": desde,
-        "hasta": hasta,
         "estado_filtro": estado or "",
-        "usuario_filtro": usuario_id,
         "guardado": guardado,
         "total_horas": sum(
-            (hora.horas_totales for hora in horas),
+            (hora.horas_totales or Decimal("0.00") for hora in horas),
             start=Decimal("0.00"),
         ),
         "cantidad_pendientes": sum(
@@ -315,20 +456,24 @@ def home(
 
 
 @app.get("/solicitudes/nueva", response_class=HTMLResponse)
-def nueva_solicitud(request: Request, db: Session = Depends(get_db)):
+def nueva_solicitud(
+    request: Request,
+    destino: str = "propio",
+    db: Session = Depends(get_db),
+):
     usuarios: list[Usuario] = []
     error = None
     try:
-        usuarios = list(db.scalars(
-            select(Usuario)
-            .where(Usuario.status.is_(True))
-            .order_by(Usuario.apellido, Usuario.nombre)
-        ))
+        assignment, usuarios = usuarios_habilitados_para_carga(request, db, destino)
+        if assignment.perfil.upper() != "JEFE":
+            destino = "propio"
     except SQLAlchemyError:
         error = "No se pudieron cargar los usuarios activos. Verificá la conexión con la base."
     return templates.TemplateResponse(request, "home.html", {
-        "active_page": "home",
+        "active_page": "horas",
         "usuarios": usuarios,
+        "usuario_fijo": usuarios[0] if destino == "propio" and usuarios else None,
+        "destino": destino,
         "fecha_hoy": date.today().isoformat(),
         "error": error,
     })
@@ -339,9 +484,11 @@ def procesar_solicitud(
     request: Request,
     usuario_id: Annotated[int, Form()],
     fecha: Annotated[date, Form()],
-    hora_inicio: Annotated[time, Form()],
-    hora_fin: Annotated[time, Form()],
+    tipo_registro: Annotated[str, Form()] = "HORAS",
+    hora_inicio: Annotated[time | None, Form()] = None,
+    hora_fin: Annotated[time | None, Form()] = None,
     observaciones: Annotated[str | None, Form()] = None,
+    destino: Annotated[str, Form()] = "propio",
     cargas: Annotated[list[str] | None, Form()] = None,
     reintegros: Annotated[list[str] | None, Form()] = None,
     db: Session = Depends(get_db),
@@ -360,44 +507,62 @@ def procesar_solicitud(
     selecciones_reintegro = selecciones_reintegro[:len(cargas_codificadas)]
     error = None
     try:
+        _, usuarios_habilitados = usuarios_habilitados_para_carga(request, db, destino)
+        if usuario_id not in {item.id for item in usuarios_habilitados}:
+            raise CalculoHorasError("No tenés permiso para cargar horas al usuario seleccionado.")
         for carga in cargas_codificadas:
             datos = decode_carga(carga)
-            resultados.append(calcular_resultado_horas_extra(*datos[:4], db))
+            if datos[0] not in ids_habilitados_para_confirmar(request, db):
+                raise CalculoHorasError("Una de las cargas contiene un usuario no autorizado.")
+            resultados.append(calcular_carga_codificada(datos, db))
             observaciones_resultados.append(datos[4])
-        nuevo_resultado = calcular_resultado_horas_extra(
-            usuario_id,
-            fecha,
-            hora_inicio,
-            hora_fin,
-            db,
+        tipo_registro = tipo_registro.strip().upper()
+        if tipo_registro == "REINTEGRO":
+            nuevos_tramos = [(fecha, None, None)]
+            nuevos_resultados = [calcular_resultado_reintegro(usuario_id, fecha, db)]
+        else:
+            if tipo_registro != "HORAS" or hora_inicio is None or hora_fin is None:
+                raise CalculoHorasError("Ingresá la hora de inicio y finalización.")
+            nuevos_tramos = dividir_carga_en_fechas(fecha, hora_inicio, hora_fin)
+            nuevos_resultados = [
+                calcular_resultado_horas_extra(
+                    usuario_id, fecha_tramo, inicio_tramo, fin_tramo, db,
+                )
+                for fecha_tramo, inicio_tramo, fin_tramo in nuevos_tramos
+            ]
+        resultados.extend(nuevos_resultados)
+        observaciones_resultados.extend(
+            [clean_optional(observaciones)] * len(nuevos_tramos)
         )
-        resultados.append(nuevo_resultado)
-        observaciones_resultados.append(clean_optional(observaciones))
-        cargas_codificadas.append(encode_carga(
-            usuario_id, fecha, hora_inicio, hora_fin, observaciones,
-        ))
-        selecciones_reintegro.append("NO")
+        cargas_codificadas.extend(
+            encode_carga(
+                usuario_id, fecha_tramo, inicio_tramo, fin_tramo, observaciones,
+                tipo_registro,
+            )
+            for fecha_tramo, inicio_tramo, fin_tramo in nuevos_tramos
+        )
+        selecciones_reintegro.extend(
+            ["SI" if tipo_registro == "REINTEGRO" else "NO"] * len(nuevos_tramos)
+        )
     except CalculoHorasError as exc:
         error = str(exc)
 
-    usuarios = list(db.scalars(
-        select(Usuario)
-        .where(Usuario.status.is_(True))
-        .order_by(Usuario.apellido, Usuario.nombre)
-    ))
+    _, usuarios = usuarios_habilitados_para_carga(request, db, destino)
     return templates.TemplateResponse(
         request,
         "solicitud.html",
         {
-            "active_page": "home",
+            "active_page": "horas",
             "resultados": resultados,
             "observaciones_resultados": observaciones_resultados,
             "cargas": cargas_codificadas,
             "reintegros": selecciones_reintegro,
             "usuarios": usuarios,
+            "usuario_fijo": usuarios[0] if destino == "propio" and usuarios else None,
+            "destino": destino,
             "fecha_hoy": date.today().isoformat(),
-            "total_horas": sum((item.horas_totales for item in resultados), start=0),
-            "total_nocturnas": sum((item.horas_nocturnas for item in resultados), start=0),
+            "total_horas": sum((item.horas_totales or Decimal("0.00") for item in resultados), start=Decimal("0.00")),
+            "total_nocturnas": sum((item.horas_nocturnas or Decimal("0.00") for item in resultados), start=Decimal("0.00")),
             "error": error,
         },
         status_code=422 if error and not resultados else 200,
@@ -406,6 +571,7 @@ def procesar_solicitud(
 
 @app.post("/solicitudes/confirmar")
 def confirmar_solicitud(
+    request: Request,
     cargas: Annotated[list[str], Form()],
     reintegros: Annotated[list[str] | None, Form()] = None,
     db: Session = Depends(get_db),
@@ -417,12 +583,15 @@ def confirmar_solicitud(
         raise HTTPException(status_code=422, detail="La selección de reintegros es inconsistente.")
 
     try:
+        ids_permitidos = ids_habilitados_para_confirmar(request, db)
         for indice, carga in enumerate(cargas):
             datos = decode_carga(carga)
-            resultado = calcular_resultado_horas_extra(*datos[:4], db)
+            if datos[0] not in ids_permitidos:
+                raise CalculoHorasError("Una de las cargas contiene un usuario no autorizado.")
+            resultado = calcular_carga_codificada(datos, db)
             solicita_reintegro = (
-                resultado.permite_reintegro
-                and selecciones[indice] == "SI"
+                resultado.tipo_registro == "REINTEGRO"
+                or (resultado.permite_reintegro and selecciones[indice] == "SI")
             )
             db.add(HoraExtra(
                 usuario_id=resultado.usuario_id,
@@ -438,13 +607,14 @@ def confirmar_solicitud(
                 estado="PENDIENTE",
                 aprobado_por=None,
                 fecha_carga=datetime.now(),
+                tipo_registro=resultado.tipo_registro,
             ))
         db.commit()
     except (CalculoHorasError, SQLAlchemyError) as error:
         db.rollback()
         mensaje = str(error) if isinstance(error, CalculoHorasError) else "No se pudo guardar la solicitud en la base de datos."
         raise HTTPException(status_code=422, detail=mensaje) from error
-    return RedirectResponse(f"/?guardado={len(cargas)}", status_code=303)
+    return RedirectResponse(f"/horas?guardado={len(cargas)}", status_code=303)
 
 
 @app.get("/configuracion/parametros", response_class=HTMLResponse)
@@ -475,6 +645,8 @@ def parametros(
             "regla_edicion": regla_edicion,
             "guardado": guardado,
             "error": error,
+            "roles_disponibles": ROLES_DISPONIBLES,
+            "perfiles_disponibles": PERFILES_DISPONIBLES,
         },
     )
 
@@ -535,19 +707,15 @@ def actualizar_regla(
 def usuarios_y_roles(
     request: Request,
     editar_usuario: int | None = None,
-    editar_rol: int | None = None,
     guardado: str | None = None,
     error: str | None = None,
     db: Session = Depends(get_db),
 ):
     usuarios: list[Usuario] = []
-    roles: list[UsuarioRol] = []
     tipos_contratacion: list[TipoContratacion] = []
     convenios: list[str] = []
     usuario_edicion = None
-    rol_edicion = None
     try:
-        roles = list(db.scalars(select(UsuarioRol).order_by(UsuarioRol.rol)))
         tipos_contratacion = list(db.scalars(
             select(TipoContratacion).order_by(TipoContratacion.id_tipo_contratacion)
         ))
@@ -558,69 +726,77 @@ def usuarios_y_roles(
         ))
         usuarios = list(db.scalars(
             select(Usuario)
-            .options(selectinload(Usuario.rol), selectinload(Usuario.tipo_contratacion))
+            .options(selectinload(Usuario.roles), selectinload(Usuario.tipo_contratacion))
             .order_by(Usuario.apellido, Usuario.nombre)
         ))
         if editar_usuario is not None:
             usuario_edicion = db.get(Usuario, editar_usuario)
             if usuario_edicion is None:
                 error = "El usuario seleccionado no existe."
-        if editar_rol is not None:
-            rol_edicion = db.get(UsuarioRol, editar_rol)
-            if rol_edicion is None:
-                error = "El rol seleccionado no existe."
     except SQLAlchemyError:
         error = "No se pudieron cargar usuarios y roles. Verificá la conexión con la base."
 
     return templates.TemplateResponse(request, "usuarios.html", {
         "active_page": "usuarios",
         "usuarios": usuarios,
-        "roles": roles,
         "tipos_contratacion": tipos_contratacion,
         "convenios": convenios,
         "usuario_edicion": usuario_edicion,
-        "rol_edicion": rol_edicion,
         "guardado": guardado,
         "error": error,
+        "roles_disponibles": ROLES_DISPONIBLES,
+        "perfiles_disponibles": PERFILES_DISPONIBLES,
     })
 
 
-@app.post("/configuracion/roles")
-def crear_rol(
+@app.post("/configuracion/usuarios/{usuario_id}/roles")
+def crear_asignacion_usuario(
+    usuario_id: int,
     rol: Annotated[str, Form()],
-    perfil: Annotated[str | None, Form()] = None,
+    perfil: Annotated[str, Form()],
     db: Session = Depends(get_db),
 ):
-    nombre_rol = rol.strip()
-    if not nombre_rol:
-        raise HTTPException(status_code=422, detail="El nombre del rol es obligatorio.")
-    db.add(UsuarioRol(rol=nombre_rol, perfil=clean_optional(perfil)))
+    usuario = db.get(Usuario, usuario_id)
+    if usuario is None:
+        raise HTTPException(status_code=404, detail="El usuario no existe.")
+    nombre_rol = rol.strip().upper()
+    nombre_perfil = perfil.strip().upper()
+    if nombre_rol not in ROLES_DISPONIBLES or nombre_perfil not in PERFILES_DISPONIBLES:
+        raise HTTPException(status_code=422, detail="La asignación de rol y perfil no es válida.")
+    db.add(UsuarioRol(usuario_id=usuario_id, rol=nombre_rol, perfil=nombre_perfil))
     try:
         db.commit()
     except IntegrityError:
         db.rollback()
-        return RedirectResponse("/configuracion/usuarios?error=Ya+existe+un+rol+con+ese+nombre", status_code=303)
-    return RedirectResponse("/configuracion/usuarios?guardado=rol+creado", status_code=303)
+        return RedirectResponse(
+            f"/configuracion/usuarios?editar_usuario={usuario_id}&error=La+asignación+ya+existe#asignaciones",
+            status_code=303,
+        )
+    return RedirectResponse(
+        f"/configuracion/usuarios?editar_usuario={usuario_id}&guardado=asignación+creada#asignaciones",
+        status_code=303,
+    )
 
 
-@app.post("/configuracion/roles/{rol_id}")
-def actualizar_rol(
+@app.post("/configuracion/usuarios/{usuario_id}/roles/{rol_id}/eliminar")
+def eliminar_asignacion_usuario(
+    usuario_id: int,
     rol_id: int,
-    rol: Annotated[str, Form()],
-    perfil: Annotated[str | None, Form()] = None,
     db: Session = Depends(get_db),
 ):
     registro = db.get(UsuarioRol, rol_id)
-    if registro is None:
-        raise HTTPException(status_code=404, detail="El rol no existe.")
-    registro.rol = rol.strip()
-    registro.perfil = clean_optional(perfil)
+    if registro is None or registro.usuario_id != usuario_id:
+        raise HTTPException(status_code=404, detail="La asignación no existe.")
+    db.delete(registro)
     try:
         db.commit()
-    except IntegrityError:
+    except SQLAlchemyError:
         db.rollback()
-        return RedirectResponse("/configuracion/usuarios?error=Ya+existe+un+rol+con+ese+nombre", status_code=303)
-    return RedirectResponse("/configuracion/usuarios?guardado=rol+actualizado", status_code=303)
+        raise HTTPException(status_code=500, detail="No se pudo eliminar la asignación.")
+    return RedirectResponse(
+        f"/configuracion/usuarios?editar_usuario={usuario_id}&guardado=asignación+eliminada#asignaciones",
+        status_code=303,
+    )
 
 
 def update_user_fields(
@@ -634,9 +810,7 @@ def update_user_fields(
     observaciones: str | None,
     username: str,
     origen: str,
-    perfil: str,
     status: str | None,
-    id_rol: int,
 ) -> None:
     required = [nombre.strip(), apellido.strip(), username.strip(), origen.strip()]
     if not all(required):
@@ -650,12 +824,7 @@ def update_user_fields(
     usuario.observaciones = clean_optional(observaciones)
     usuario.username = username.strip()
     usuario.origen = origen.strip()
-    perfil_normalizado = perfil.strip().upper()
-    if perfil_normalizado not in {"USUARIO", "JEFE"}:
-        raise HTTPException(status_code=422, detail="El perfil seleccionado no es válido.")
-    usuario.perfil = perfil_normalizado
     usuario.status = status == "on"
-    usuario.id_rol = id_rol
 
 
 @app.post("/configuracion/usuarios")
@@ -665,8 +834,8 @@ def crear_usuario(
     username: Annotated[str, Form()],
     password: Annotated[str, Form()],
     origen: Annotated[str, Form()],
+    rol: Annotated[str, Form()],
     perfil: Annotated[str, Form()],
-    id_rol: Annotated[int, Form()],
     legajo: Annotated[str | None, Form()] = None,
     correo: Annotated[str | None, Form()] = None,
     convenio: Annotated[str | None, Form()] = None,
@@ -675,18 +844,26 @@ def crear_usuario(
     status: Annotated[str | None, Form()] = None,
     db: Session = Depends(get_db),
 ):
+    nombre_rol = rol.strip().upper()
+    nombre_perfil = perfil.strip().upper()
+    if nombre_rol not in ROLES_DISPONIBLES or nombre_perfil not in PERFILES_DISPONIBLES:
+        raise HTTPException(status_code=422, detail="La asignación de rol y perfil no es válida.")
     if len(password) < 8:
         return RedirectResponse("/configuracion/usuarios?error=La+contraseña+debe+tener+al+menos+8+caracteres", status_code=303)
-    if db.get(UsuarioRol, id_rol) is None:
-        raise HTTPException(status_code=422, detail="El rol seleccionado no existe.")
     if db.get(TipoContratacion, id_tipo_contratacion) is None:
         raise HTTPException(status_code=422, detail="La contratación seleccionada no existe.")
     if convenio not in set(db.scalars(select(ReglaHora.convenio).distinct())):
         raise HTTPException(status_code=422, detail="El convenio seleccionado no existe en las reglas de horas.")
     usuario = Usuario(hashed_password=hash_password(password))
-    update_user_fields(usuario, legajo, nombre, apellido, correo, convenio, id_tipo_contratacion, observaciones, username, origen, perfil, status, id_rol)
+    update_user_fields(usuario, legajo, nombre, apellido, correo, convenio, id_tipo_contratacion, observaciones, username, origen, status)
     db.add(usuario)
     try:
+        db.flush()
+        db.add(UsuarioRol(
+            usuario_id=usuario.id,
+            rol=nombre_rol,
+            perfil=nombre_perfil,
+        ))
         db.commit()
     except IntegrityError:
         db.rollback()
@@ -701,8 +878,6 @@ def actualizar_usuario(
     apellido: Annotated[str, Form()],
     username: Annotated[str, Form()],
     origen: Annotated[str, Form()],
-    perfil: Annotated[str, Form()],
-    id_rol: Annotated[int, Form()],
     legajo: Annotated[str | None, Form()] = None,
     correo: Annotated[str | None, Form()] = None,
     convenio: Annotated[str | None, Form()] = None,
@@ -715,8 +890,6 @@ def actualizar_usuario(
     usuario = db.get(Usuario, usuario_id)
     if usuario is None:
         raise HTTPException(status_code=404, detail="El usuario no existe.")
-    if db.get(UsuarioRol, id_rol) is None:
-        raise HTTPException(status_code=422, detail="El rol seleccionado no existe.")
     if db.get(TipoContratacion, id_tipo_contratacion) is None:
         raise HTTPException(status_code=422, detail="La contratación seleccionada no existe.")
     if convenio not in set(db.scalars(select(ReglaHora.convenio).distinct())):
@@ -725,7 +898,7 @@ def actualizar_usuario(
         if len(password) < 8:
             return RedirectResponse(f"/configuracion/usuarios?editar_usuario={usuario_id}&error=La+contraseña+debe+tener+al+menos+8+caracteres", status_code=303)
         usuario.hashed_password = hash_password(password)
-    update_user_fields(usuario, legajo, nombre, apellido, correo, convenio, id_tipo_contratacion, observaciones, username, origen, perfil, status, id_rol)
+    update_user_fields(usuario, legajo, nombre, apellido, correo, convenio, id_tipo_contratacion, observaciones, username, origen, status)
     try:
         db.commit()
     except IntegrityError:
@@ -876,57 +1049,51 @@ def actualizar_feriado(
 @app.get("/autorizaciones", response_class=HTMLResponse)
 def autorizaciones(
     request: Request,
-    jefe_id: int | None = None,
     editar: int | None = None,
     guardado: int | None = None,
     rechazado: int | None = None,
     db: Session = Depends(get_db),
 ):
-    jefes = list(db.scalars(
-        select(Usuario)
-        .options(selectinload(Usuario.rol))
-        .where(Usuario.status.is_(True), Usuario.perfil == "JEFE")
-        .order_by(Usuario.apellido, Usuario.nombre)
-    ))
-    jefe = None
+    autorizador, asignacion_activa, es_admin = obtener_autorizador(request, db)
     grupos = []
     hora_edicion = None
-    if jefe_id is not None:
-        jefe = obtener_jefe(jefe_id, db)
-        pendientes = list(db.scalars(
-            select(HoraExtra)
-            .join(HoraExtra.usuario)
-            .options(selectinload(HoraExtra.usuario))
-            .where(
-                HoraExtra.estado == "PENDIENTE",
-                Usuario.id_rol == jefe.id_rol,
-                Usuario.id != jefe.id,
-            )
-            .order_by(Usuario.apellido, Usuario.nombre, HoraExtra.fecha, HoraExtra.hora_inicio)
-        ))
-        agrupados: dict[int, dict] = {}
-        for hora in pendientes:
-            grupo = agrupados.setdefault(hora.usuario_id, {
-                "usuario": hora.usuario,
-                "horas": [],
-                "total": Decimal("0.00"),
-            })
-            grupo["horas"].append(hora)
-            grupo["total"] += hora.horas_totales
-        grupos = list(agrupados.values())
+    condiciones = [HoraExtra.estado == "PENDIENTE"]
+    if not es_admin:
+        condiciones.extend([
+            Usuario.id != autorizador.id,
+            Usuario.roles.any(func.upper(UsuarioRol.rol) == asignacion_activa.rol.upper()),
+        ])
+    pendientes = list(db.scalars(
+        select(HoraExtra)
+        .join(HoraExtra.usuario)
+        .options(selectinload(HoraExtra.usuario).selectinload(Usuario.roles))
+        .where(*condiciones)
+        .order_by(Usuario.apellido, Usuario.nombre, HoraExtra.fecha, HoraExtra.hora_inicio)
+    ))
+    agrupados: dict[int, dict] = {}
+    for hora in pendientes:
+        grupo = agrupados.setdefault(hora.usuario_id, {
+            "usuario": hora.usuario,
+            "horas": [],
+            "total": Decimal("0.00"),
+        })
+        grupo["horas"].append(hora)
+        grupo["total"] += hora.horas_totales or Decimal("0.00")
+    grupos = list(agrupados.values())
 
-        if editar is not None:
-            hora_edicion = db.scalar(
-                select(HoraExtra)
-                .options(selectinload(HoraExtra.usuario))
-                .where(HoraExtra.id == editar)
-            )
-            validar_hora_para_jefe(hora_edicion, jefe)
+    if editar is not None:
+        hora_edicion = db.scalar(
+            select(HoraExtra)
+            .options(selectinload(HoraExtra.usuario).selectinload(Usuario.roles))
+            .where(HoraExtra.id == editar)
+        )
+        validar_hora_para_autorizador(hora_edicion, asignacion_activa, es_admin)
 
     return templates.TemplateResponse(request, "autorizaciones.html", {
         "active_page": "autorizaciones",
-        "jefes": jefes,
-        "jefe": jefe,
+        "jefe": autorizador,
+        "asignacion_activa": asignacion_activa,
+        "es_admin": es_admin,
         "grupos": grupos,
         "hora_edicion": hora_edicion,
         "guardado": guardado,
@@ -941,66 +1108,66 @@ def autorizaciones(
 
 @app.post("/autorizaciones/aprobar")
 def aprobar_horas(
-    jefe_id: Annotated[int, Form()],
+    request: Request,
     hora_ids: Annotated[list[int] | None, Form()] = None,
     db: Session = Depends(get_db),
 ):
     ids = list(dict.fromkeys(hora_ids or []))
     if not ids:
         raise HTTPException(status_code=422, detail="Seleccioná al menos una carga para autorizar.")
-    jefe = obtener_jefe(jefe_id, db)
+    autorizador, asignacion_activa, es_admin = obtener_autorizador(request, db)
     try:
         horas = list(db.scalars(
             select(HoraExtra)
-            .options(selectinload(HoraExtra.usuario))
+            .options(selectinload(HoraExtra.usuario).selectinload(Usuario.roles))
             .where(HoraExtra.id.in_(ids))
             .with_for_update()
         ))
         if len(horas) != len(ids):
             raise HTTPException(status_code=404, detail="Una de las cargas seleccionadas no existe.")
         for hora in horas:
-            validar_hora_para_jefe(hora, jefe)
+            validar_hora_para_autorizador(hora, asignacion_activa, es_admin)
             hora.estado = "APROBADA"
-            hora.aprobado_por = jefe.id
+            hora.aprobado_por = autorizador.id
         db.commit()
     except SQLAlchemyError as error:
         db.rollback()
         raise HTTPException(status_code=500, detail="No se pudieron autorizar las horas seleccionadas.") from error
     return RedirectResponse(
-        f"/autorizaciones?jefe_id={jefe.id}&guardado={len(horas)}",
+        f"/autorizaciones?guardado={len(horas)}",
         status_code=303,
     )
 
 
 @app.post("/autorizaciones/rechazar")
 def rechazar_horas(
-    jefe_id: Annotated[int, Form()],
+    request: Request,
     hora_ids: Annotated[list[int] | None, Form()] = None,
     db: Session = Depends(get_db),
 ):
     ids = list(dict.fromkeys(hora_ids or []))
     if not ids:
         raise HTTPException(status_code=422, detail="Seleccioná al menos una carga para rechazar.")
-    jefe = obtener_jefe(jefe_id, db)
+    autorizador, asignacion_activa, es_admin = obtener_autorizador(request, db)
     try:
         horas = list(db.scalars(
             select(HoraExtra)
-            .options(selectinload(HoraExtra.usuario))
+            .options(selectinload(HoraExtra.usuario).selectinload(Usuario.roles))
             .where(HoraExtra.id.in_(ids))
             .with_for_update()
         ))
         if len(horas) != len(ids):
             raise HTTPException(status_code=404, detail="Una de las cargas seleccionadas no existe.")
         for hora in horas:
-            validar_hora_para_jefe(hora, jefe)
+            validar_hora_para_autorizador(hora, asignacion_activa, es_admin)
             hora.estado = "RECHAZADA"
-            hora.aprobado_por = jefe.id
+            hora.aprobado_por = autorizador.id
         db.commit()
     except SQLAlchemyError as error:
         db.rollback()
         raise HTTPException(status_code=500, detail="No se pudieron rechazar las horas seleccionadas.") from error
     return RedirectResponse(
-        f"/autorizaciones?jefe_id={jefe.id}&rechazado={len(horas)}",
+        f"/autorizaciones?rechazado={len(horas)}",
         status_code=303,
     )
 
@@ -1008,7 +1175,7 @@ def rechazar_horas(
 @app.post("/autorizaciones/{hora_id}/editar")
 def editar_hora_pendiente(
     hora_id: int,
-    jefe_id: Annotated[int, Form()],
+    request: Request,
     fecha: Annotated[date, Form()],
     hora_inicio: Annotated[time, Form()],
     hora_fin: Annotated[time, Form()],
@@ -1016,13 +1183,13 @@ def editar_hora_pendiente(
     solicita_reintegro: Annotated[str | None, Form()] = None,
     db: Session = Depends(get_db),
 ):
-    jefe = obtener_jefe(jefe_id, db)
+    autorizador, asignacion_activa, es_admin = obtener_autorizador(request, db)
     hora = db.scalar(
         select(HoraExtra)
-        .options(selectinload(HoraExtra.usuario))
+        .options(selectinload(HoraExtra.usuario).selectinload(Usuario.roles))
         .where(HoraExtra.id == hora_id)
     )
-    validar_hora_para_jefe(hora, jefe)
+    validar_hora_para_autorizador(hora, asignacion_activa, es_admin)
     try:
         resultado = calcular_resultado_horas_extra(
             hora.usuario_id, fecha, hora_inicio, hora_fin, db,
@@ -1043,7 +1210,7 @@ def editar_hora_pendiente(
         db.rollback()
         mensaje = str(error) if isinstance(error, CalculoHorasError) else "No se pudo actualizar la carga."
         raise HTTPException(status_code=422, detail=mensaje) from error
-    return RedirectResponse(f"/autorizaciones?jefe_id={jefe.id}", status_code=303)
+    return RedirectResponse("/autorizaciones", status_code=303)
 
 
 @app.get("/health")

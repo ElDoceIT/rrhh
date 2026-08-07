@@ -34,6 +34,57 @@ document.querySelectorAll(".reintegro-select").forEach((select) => {
   });
 });
 
+function updateDraftCount() {
+  const count = document.querySelectorAll("[data-draft-row]").length;
+  const countChip = document.querySelector("#draft-count");
+  const actionCount = document.querySelector("#draft-action-count");
+  const confirmButton = document.querySelector("#confirm-batch-form button");
+  if (countChip) countChip.textContent = String(count);
+  if (actionCount) actionCount.textContent = String(count);
+  if (confirmButton) confirmButton.disabled = count === 0;
+}
+
+document.querySelectorAll(".remove-draft").forEach((button) => {
+  button.addEventListener("click", () => {
+    const index = button.dataset.draftIndex;
+    document.querySelectorAll(`[data-draft-index="${index}"]`).forEach((item) => item.remove());
+    updateDraftCount();
+  });
+});
+
+const draftPage = document.querySelector(".draft-table");
+let allowDraftNavigation = false;
+const hasPendingDrafts = () => document.querySelectorAll("[data-draft-row]").length > 0;
+
+if (draftPage) {
+  document.querySelector("#add-request-form")?.addEventListener("submit", () => {
+    allowDraftNavigation = true;
+  });
+  document.querySelector("#confirm-batch-form")?.addEventListener("submit", () => {
+    allowDraftNavigation = true;
+  });
+
+  document.addEventListener("click", (event) => {
+    const link = event.target.closest("a[href]");
+    if (!link || allowDraftNavigation || !hasPendingDrafts()) return;
+    const confirmed = window.confirm(
+      "Tenés cargas sin procesar. Si salís de esta página, se perderán. ¿Querés salir igualmente?"
+    );
+    if (!confirmed) event.preventDefault();
+    else allowDraftNavigation = true;
+  });
+
+  window.addEventListener("beforeunload", (event) => {
+    if (allowDraftNavigation || !hasPendingDrafts()) return;
+    event.preventDefault();
+    event.returnValue = "";
+  });
+
+  window.addEventListener("pageshow", () => {
+    allowDraftNavigation = false;
+  });
+}
+
 const hourCheckboxes = [...document.querySelectorAll(".hour-checkbox")];
 const selectAllHours = document.querySelector("#select-all-hours");
 const authorizeButton = document.querySelector("#authorize-selected");
@@ -70,3 +121,79 @@ document.querySelectorAll(".select-user-hours").forEach((control) => {
   });
 });
 hourCheckboxes.forEach((item) => item.addEventListener("change", updateAuthorizationSelection));
+
+function syncTimeSelectFromHidden(input) {
+  const control = input?.closest("[data-time-select]");
+  if (!control || !input.value) return;
+  const [hour, minute] = input.value.split(":");
+  control.querySelector("[data-time-hour]").value = hour;
+  control.querySelector("[data-time-minute]").value = minute;
+}
+
+document.querySelectorAll("[data-time-select]").forEach((control) => {
+  const hourSelect = control.querySelector("[data-time-hour]");
+  const minuteSelect = control.querySelector("[data-time-minute]");
+  const hiddenInput = control.querySelector('input[type="hidden"]');
+  const updateHiddenTime = () => {
+    hiddenInput.value = hourSelect.value && minuteSelect.value
+      ? `${hourSelect.value}:${minuteSelect.value}`
+      : "";
+    hiddenInput.dispatchEvent(new Event("change"));
+  };
+  hourSelect.addEventListener("change", updateHiddenTime);
+  minuteSelect.addEventListener("change", updateHiddenTime);
+  syncTimeSelectFromHidden(hiddenInput);
+});
+
+document.querySelectorAll(".request-form").forEach((form) => {
+  const startInput = form.querySelector("[data-start-time]");
+  const endInput = form.querySelector("[data-end-time]");
+  const durationInput = form.querySelector("[data-duration-hours]");
+  if (!startInput || !endInput || !durationInput) return;
+
+  const clampDuration = (value) => Math.min(16, Math.max(0.5, value));
+  const timeToMinutes = (value) => {
+    const [hours, minutes] = value.split(":").map(Number);
+    return hours * 60 + minutes;
+  };
+  const formatTime = (minutes) => {
+    const normalized = ((minutes % 1440) + 1440) % 1440;
+    return `${String(Math.floor(normalized / 60)).padStart(2, "0")}:${String(normalized % 60).padStart(2, "0")}`;
+  };
+  const updateEndTime = () => {
+    if (!startInput.value) return;
+    const duration = clampDuration(Number(durationInput.value) || 1);
+    durationInput.value = String(duration);
+    endInput.value = formatTime(timeToMinutes(startInput.value) + Math.round(duration * 60));
+    syncTimeSelectFromHidden(endInput);
+  };
+  const changeDuration = (delta) => {
+    durationInput.value = String(clampDuration((Number(durationInput.value) || 1) + delta));
+    updateEndTime();
+  };
+
+  form.querySelector("[data-duration-down]")?.addEventListener("click", () => changeDuration(-0.5));
+  form.querySelector("[data-duration-up]")?.addEventListener("click", () => changeDuration(0.5));
+  startInput.addEventListener("change", updateEndTime);
+  endInput.addEventListener("change", () => {
+    if (!startInput.value || !endInput.value) return;
+    let minutes = timeToMinutes(endInput.value) - timeToMinutes(startInput.value);
+    if (minutes <= 0) minutes += 1440;
+    const hours = minutes / 60;
+    if (hours >= 0.5 && hours <= 16) durationInput.value = String(Math.round(hours * 2) / 2);
+  });
+
+  const updateRecordType = () => {
+    const isHours = form.querySelector('input[name="tipo_registro"]:checked')?.value !== "REINTEGRO";
+    form.querySelectorAll(".hours-only-field").forEach((field) => {
+      field.classList.toggle("hidden", !isHours);
+      field.querySelectorAll("select, input, button").forEach((control) => {
+        control.disabled = !isHours;
+      });
+    });
+  };
+  form.querySelectorAll('input[name="tipo_registro"]').forEach((radio) => {
+    radio.addEventListener("change", updateRecordType);
+  });
+  updateRecordType();
+});

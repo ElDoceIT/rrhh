@@ -15,13 +15,10 @@
       <a class="app-brand-mark" href="/" aria-label="Inicio" title="Inicio">
         <img src="{{ url_for('static', path='/logoc12_1.png') }}" alt="Canal Doce" width="25" height="25">
       </a>
-      <a class="home-button{% if active_page == 'home' %} active{% endif %}" href="/" aria-label="Inicio" title="Inicio"><i class="bi bi-house-door-fill"></i></a>
+      <a class="home-button{% if active_page == 'inicio' %} active{% endif %}" href="/" aria-label="Inicio" title="Inicio"><i class="bi bi-house-door-fill"></i></a>
       <span class="nav-separator" aria-hidden="true"></span>
-      <a class="app-menu-link{% if active_page == 'home' %} active{% endif %}" href="/">Horas extras</a>
-      <span class="nav-separator" aria-hidden="true"></span>
-      <a class="app-menu-link{% if active_page == 'autorizaciones' %} active{% endif %}" href="/autorizaciones">Autorizaciones</a>
-      <span class="nav-separator" aria-hidden="true"></span>
-      <div class="menu-dropdown">
+      {% if current_user and (current_user.role|upper == 'ADMIN' or current_user.profile|upper == 'JEFE') %}<a class="app-menu-link{% if active_page == 'autorizaciones' %} active{% endif %}" href="/autorizaciones">Autorizaciones</a><span class="nav-separator" aria-hidden="true"></span>{% endif %}
+      {% if current_user and current_user.role|upper == 'ADMIN' %}<div class="menu-dropdown">
         <button class="app-menu-link dropdown-trigger{% if active_page in ['parametros', 'usuarios', 'feriados'] %} active{% endif %}" type="button">
           Configuración <i class="bi bi-chevron-down"></i>
         </button>
@@ -30,11 +27,19 @@
           <a href="/configuracion/usuarios"><i class="bi bi-people"></i> Usuarios y roles</a>
           <a href="/configuracion/feriados"><i class="bi bi-calendar-event"></i> Feriados</a>
         </div>
-      </div>
+      </div>{% endif %}
     </div>
     <div class="app-menu-right">
       {% if current_user %}
       <span class="session-user" title="{{ current_user.email or current_user.username }}"><i class="bi bi-person-circle"></i> {{ current_user.display_name }}</span>
+      {% if current_user.assignments %}
+      <form method="post" action="/sesion/asignacion" class="assignment-switcher" title="Cambiar rol y perfil activo">
+        <label class="sr-only" for="active-assignment">Rol y perfil activo</label>
+        <select id="active-assignment" name="asignacion_id" onchange="this.form.submit()">
+          {% for asignacion in current_user.assignments %}<option value="{{ asignacion.id }}" {% if asignacion.id == current_user.active_assignment_id %}selected{% endif %}>{{ asignacion.role }} · {{ asignacion.profile|capitalize }}</option>{% endfor %}
+        </select>
+      </form>
+      {% else %}<span class="status-chip warning-chip">Sin rol asignado</span>{% endif %}
       <form method="post" action="/logout" class="logout-form"><button class="ui-btn icon-btn" type="submit" aria-label="Cerrar sesión" title="Cerrar sesión"><i class="bi bi-box-arrow-right"></i></button></form>
       {% endif %}
       <a class="db-status" href="/health/db" target="_blank" title="Verificar conexión"><i class="bi bi-database-check"></i> Base de datos</a>
