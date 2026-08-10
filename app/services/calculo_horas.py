@@ -35,6 +35,7 @@ class ResultadoHorasExtra:
     permite_reintegro: bool
     regla_id: int
     tipo_registro: str = "HORAS"
+    cantidad: Decimal | None = None
 
 
 def _hora_a_minutos(valor: time) -> int:
@@ -155,6 +156,56 @@ def obtener_regla_horas(
             f"Hay más de una regla para el convenio {convenio_normalizado} y el tipo de día {tipo_dia_normalizado}. Revisá la configuración."
         )
     return reglas[0]
+
+
+def calcular_resultado_otra_carga(
+    usuario_id: int,
+    fecha: date,
+    tipo_hora: str,
+    cantidad: Decimal,
+    db: Session,
+) -> ResultadoHorasExtra:
+    usuario = db.get(Usuario, usuario_id)
+    if usuario is None or not usuario.status:
+        raise CalculoHorasError("El usuario seleccionado no existe o está inactivo.")
+    if not usuario.convenio:
+        raise CalculoHorasError("El usuario no tiene un convenio asignado.")
+    tipo_hora_normalizado = tipo_hora.strip().upper()
+    if tipo_hora_normalizado in {"COMIDA", "MERIENDA"}:
+        raise CalculoHorasError("El tipo de carga seleccionado no está permitido.")
+    if cantidad <= 0:
+        raise CalculoHorasError("La cantidad debe ser mayor que cero.")
+    regla = db.scalar(
+        select(ReglaHora)
+        .where(
+            func.upper(ReglaHora.convenio) == usuario.convenio.strip().upper(),
+            func.upper(ReglaHora.tipo_dia) == "TODOS",
+            func.upper(ReglaHora.tipo_hora) == tipo_hora_normalizado,
+        )
+        .order_by(ReglaHora.id)
+        .limit(1)
+    )
+    if regla is None:
+        raise CalculoHorasError(
+            f"No existe la carga {tipo_hora_normalizado} para el convenio {usuario.convenio}."
+        )
+    return ResultadoHorasExtra(
+        usuario_id=usuario.id,
+        usuario_nombre=f"{usuario.apellido}, {usuario.nombre}",
+        legajo=usuario.legajo,
+        convenio=usuario.convenio,
+        fecha=fecha,
+        hora_inicio=None,
+        hora_fin=None,
+        tipo_dia="TODOS",
+        tipo_hora=regla.tipo_hora,
+        horas_totales=None,
+        horas_nocturnas=None,
+        permite_reintegro=False,
+        regla_id=regla.id,
+        tipo_registro="OTRAS",
+        cantidad=cantidad.quantize(DOS_DECIMALES, rounding=ROUND_HALF_UP),
+    )
 
 
 def calcular_resultado_horas_extra(

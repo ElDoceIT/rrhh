@@ -55,6 +55,11 @@ class HoraExtra(Base):
         nullable=True,
     )
 
+    cantidad: Mapped[Decimal | None] = mapped_column(
+        Numeric(8, 2),
+        nullable=True,
+    )
+
     tipo_dia: Mapped[str] = mapped_column(
         String(20),
         nullable=False,

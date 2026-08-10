@@ -22,6 +22,7 @@ from app.services.access_catalog import CONVENIOS_DISPONIBLES, PERFILES_DISPONIB
 from app.services.calculo_horas import (
     CalculoHorasError,
     calcular_resultado_horas_extra,
+    calcular_resultado_otra_carga,
     calcular_resultado_reintegro,
     dividir_carga_en_fechas,
 )
@@ -171,6 +172,18 @@ def ids_habilitados_para_confirmar(request: Request, db: Session) -> set[int]:
     return permitidos
 
 
+def tipos_otras_cargas(db: Session) -> list[tuple[str, str]]:
+    return list(db.execute(
+        select(ReglaHora.convenio, ReglaHora.tipo_hora)
+        .where(
+            func.upper(ReglaHora.tipo_dia) == "TODOS",
+            func.upper(ReglaHora.tipo_hora).notin_(("COMIDA", "MERIENDA")),
+        )
+        .distinct()
+        .order_by(ReglaHora.convenio, ReglaHora.tipo_hora)
+    ).tuples())
+
+
 def encode_carga(
     usuario_id: int,
     fecha: date,
@@ -179,6 +192,8 @@ def encode_carga(
     observaciones: str | None,
     tipo_registro: str = "HORAS",
     marcar_como_franco: bool = False,
+    tipo_hora: str | None = None,
+    cantidad: Decimal | None = None,
 ) -> str:
     return "|".join((
         str(usuario_id),
@@ -188,20 +203,24 @@ def encode_carga(
         quote(clean_optional(observaciones) or "", safe=""),
         tipo_registro,
         "SI" if marcar_como_franco else "NO",
+        quote(clean_optional(tipo_hora) or "", safe=""),
+        str(cantidad) if cantidad is not None else "",
     ))
 
 
-def decode_carga(value: str) -> tuple[int, date, time | None, time | None, str | None, str, bool]:
+def decode_carga(value: str) -> tuple[int, date, time | None, time | None, str | None, str, bool, str | None, Decimal | None]:
     try:
-        partes = value.split("|", maxsplit=6)
+        partes = value.split("|", maxsplit=8)
         if len(partes) == 5:
             partes.append("HORAS")
         if len(partes) == 6:
             partes.append("NO")
-        usuario_id, fecha, hora_inicio, hora_fin, observaciones, tipo_registro, marcar_franco = partes
+        while len(partes) < 9:
+            partes.append("")
+        usuario_id, fecha, hora_inicio, hora_fin, observaciones, tipo_registro, marcar_franco, tipo_hora, cantidad = partes
         tipo_registro = tipo_registro.strip().upper()
         marcar_franco = marcar_franco.strip().upper()
-        if tipo_registro not in {"HORAS", "REINTEGRO"} or marcar_franco not in {"SI", "NO"}:
+        if tipo_registro not in {"HORAS", "REINTEGRO", "OTRAS"} or marcar_franco not in {"SI", "NO"}:
             raise ValueError
         return (
             int(usuario_id),
@@ -211,15 +230,21 @@ def decode_carga(value: str) -> tuple[int, date, time | None, time | None, str |
             clean_optional(unquote(observaciones)),
             tipo_registro,
             marcar_franco == "SI",
+            clean_optional(unquote(tipo_hora)),
+            Decimal(cantidad) if cantidad else None,
         )
     except (TypeError, ValueError) as error:
         raise CalculoHorasError("La solicitud contiene una carga con formato inválido.") from error
 
 
 def calcular_carga_codificada(datos, db: Session):
-    usuario_id, fecha, hora_inicio, hora_fin, _, tipo_registro, marcar_como_franco = datos
+    usuario_id, fecha, hora_inicio, hora_fin, _, tipo_registro, marcar_como_franco, tipo_hora, cantidad = datos
     if tipo_registro == "REINTEGRO":
         return calcular_resultado_reintegro(usuario_id, fecha, db)
+    if tipo_registro == "OTRAS":
+        if tipo_hora is None or cantidad is None:
+            raise CalculoHorasError("La otra carga no contiene un tipo y una cantidad válidos.")
+        return calcular_resultado_otra_carga(usuario_id, fecha, tipo_hora, cantidad, db)
     if hora_inicio is None or hora_fin is None:
         raise CalculoHorasError("La carga de horas no contiene un horario válido.")
     return calcular_resultado_horas_extra(
@@ -492,6 +517,7 @@ def nueva_solicitud(
         "usuario_fijo": usuarios[0] if destino == "propio" and usuarios else None,
         "destino": destino,
         "fecha_hoy": date.today().isoformat(),
+        "tipos_otras_cargas": tipos_otras_cargas(db),
         "error": error,
     })
 
@@ -510,6 +536,8 @@ def procesar_solicitud(
     reintegros: Annotated[list[str] | None, Form()] = None,
     marcar_como_franco: Annotated[str | None, Form()] = None,
     solicita_reintegro_dia: Annotated[str | None, Form()] = None,
+    tipo_otra_carga: Annotated[str | None, Form()] = None,
+    cantidad: Annotated[Decimal | None, Form()] = None,
     db: Session = Depends(get_db),
 ):
     resultados = []
@@ -539,6 +567,15 @@ def procesar_solicitud(
         if tipo_registro == "REINTEGRO":
             nuevos_tramos = [(fecha, None, None)]
             nuevos_resultados = [calcular_resultado_reintegro(usuario_id, fecha, db)]
+        elif tipo_registro == "OTRAS":
+            if not tipo_otra_carga or cantidad is None:
+                raise CalculoHorasError("Seleccioná un tipo de carga e ingresá la cantidad.")
+            nuevos_tramos = [(fecha, None, None)]
+            nuevos_resultados = [
+                calcular_resultado_otra_carga(
+                    usuario_id, fecha, tipo_otra_carga, cantidad, db,
+                )
+            ]
         else:
             if tipo_registro != "HORAS" or hora_inicio is None or hora_fin is None:
                 raise CalculoHorasError("Ingresá la hora de inicio y finalización.")
@@ -567,8 +604,10 @@ def procesar_solicitud(
                 usuario_id, fecha_tramo, inicio_tramo, fin_tramo, observaciones,
                 tipo_registro,
                 marcar_como_franco=(marcar_como_franco == "on" and fecha_tramo == fecha),
+                tipo_hora=resultado.tipo_hora if tipo_registro == "OTRAS" else None,
+                cantidad=resultado.cantidad if tipo_registro == "OTRAS" else None,
             )
-            for fecha_tramo, inicio_tramo, fin_tramo in nuevos_tramos
+            for (fecha_tramo, inicio_tramo, fin_tramo), resultado in zip(nuevos_tramos, nuevos_resultados)
         )
         selecciones_reintegro.extend([
             "SI"
@@ -597,6 +636,7 @@ def procesar_solicitud(
             "usuario_fijo": usuarios[0] if destino == "propio" and usuarios else None,
             "destino": destino,
             "fecha_hoy": date.today().isoformat(),
+            "tipos_otras_cargas": tipos_otras_cargas(db),
             "total_horas": sum((item.horas_totales or Decimal("0.00") for item in resultados), start=Decimal("0.00")),
             "total_nocturnas": sum((item.horas_nocturnas or Decimal("0.00") for item in resultados), start=Decimal("0.00")),
             "error": error,
@@ -636,6 +676,7 @@ def confirmar_solicitud(
                 hora_inicio=resultado.hora_inicio,
                 hora_fin=resultado.hora_fin,
                 horas_totales=resultado.horas_totales,
+                cantidad=resultado.cantidad,
                 tipo_dia=resultado.tipo_dia,
                 tipo_hora=resultado.tipo_hora,
                 horas_nocturnas=resultado.horas_nocturnas,

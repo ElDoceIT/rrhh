@@ -21,6 +21,7 @@ from app.services.calculo_horas import (
     CalculoHorasError,
     calcular_horas_totales,
     calcular_resultado_horas_extra,
+    calcular_resultado_otra_carga,
     calcular_resultado_reintegro,
     clasificar_tipo_dia,
     dividir_carga_en_fechas,
@@ -204,6 +205,26 @@ class ReintegroTests(unittest.TestCase):
         with self.Session() as db:
             self.assertEqual(clasificar_tipo_dia(date(2026, 8, 8), db), "HABIL")
             self.assertEqual(clasificar_tipo_dia(date(2026, 8, 9), db), "HABIL")
+
+    def test_otra_carga_uses_manual_quantity_without_hour_calculation(self):
+        with self.Session() as db:
+            user = Usuario(
+                nombre="Ana", apellido="Pérez", username="aperez-otra",
+                hashed_password="x", origen="AD", convenio="SAT", status=True,
+            )
+            db.add_all([
+                user,
+                ReglaHora(convenio="SAT", tipo_dia="TODOS", tipo_hora="HS ARTICULO"),
+            ])
+            db.commit()
+            result = calcular_resultado_otra_carga(
+                user.id, date(2026, 8, 10), "HS ARTICULO", Decimal("8"), db,
+            )
+            self.assertEqual(result.tipo_registro, "OTRAS")
+            self.assertEqual(result.tipo_dia, "TODOS")
+            self.assertEqual(result.cantidad, Decimal("8.00"))
+            self.assertIsNone(result.hora_inicio)
+            self.assertIsNone(result.horas_totales)
 
     def test_hours_can_be_marked_as_franco_explicitly(self):
         with self.Session() as db:

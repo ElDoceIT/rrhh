@@ -184,16 +184,51 @@ document.querySelectorAll(".request-form").forEach((form) => {
   });
 
   const updateRecordType = () => {
-    const isHours = form.querySelector('input[name="tipo_registro"]:checked')?.value !== "REINTEGRO";
+    const recordType = form.querySelector('input[name="tipo_registro"]:checked')?.value;
+    const isHours = recordType === "HORAS";
+    const isOther = recordType === "OTRAS";
     form.querySelectorAll(".hours-only-field").forEach((field) => {
       field.classList.toggle("hidden", !isHours);
       field.querySelectorAll("select, input, button").forEach((control) => {
         control.disabled = !isHours;
       });
     });
+    form.querySelectorAll(".other-only-field").forEach((field) => {
+      field.classList.toggle("hidden", !isOther);
+      field.querySelectorAll("select, input, button").forEach((control) => {
+        control.disabled = !isOther;
+      });
+    });
   };
+  const otherQuantity = form.querySelector("[data-other-quantity]");
+  const userSelect = form.querySelector('select[name="usuario_id"]');
+  const otherTypeSelect = form.querySelector('select[name="tipo_otra_carga"]');
+  const updateOtherTypes = () => {
+    if (!otherTypeSelect) return;
+    const convenio = (
+      form.dataset.fixedConvenio
+      || userSelect?.selectedOptions[0]?.dataset.convenio
+      || ""
+    ).toUpperCase();
+    Array.from(otherTypeSelect.options).forEach((option) => {
+      if (!option.dataset.convenio) return;
+      const isAllowed = option.dataset.convenio.toUpperCase() === convenio;
+      option.hidden = !isAllowed;
+      option.disabled = !isAllowed;
+      if (!isAllowed && option.selected) otherTypeSelect.value = "";
+    });
+  };
+  const changeOtherQuantity = (delta) => {
+    if (!otherQuantity) return;
+    const nextValue = Math.max(0.01, (Number(otherQuantity.value) || 1) + delta);
+    otherQuantity.value = String(Math.round(nextValue * 100) / 100);
+  };
+  form.querySelector("[data-other-quantity-down]")?.addEventListener("click", () => changeOtherQuantity(-1));
+  form.querySelector("[data-other-quantity-up]")?.addEventListener("click", () => changeOtherQuantity(1));
+  userSelect?.addEventListener("change", updateOtherTypes);
   form.querySelectorAll('input[name="tipo_registro"]').forEach((radio) => {
     radio.addEventListener("change", updateRecordType);
   });
   updateRecordType();
+  updateOtherTypes();
 });

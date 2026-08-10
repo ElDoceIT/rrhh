@@ -20,12 +20,12 @@ class ReglaHora(Base):
     )
 
     tipo_dia: Mapped[str] = mapped_column(
-        String(20),
+        String(40),
         nullable=False,
     )
 
     tipo_hora: Mapped[str] = mapped_column(
-        String(20),
+        String(40),
         nullable=False,
     )
 
