@@ -64,13 +64,20 @@
 
   <section class="card">
     <div class="section-heading section-heading-pill"><h2>Usuarios registrados</h2><span class="count-chip">{{ usuarios|length }}</span></div>
+    <form method="get" action="/configuracion/usuarios" class="dashboard-filters">
+      <div class="filter-capsule"><label for="filtro-estado">Estado</label><select id="filtro-estado" name="filtro_estado"><option value="ACTIVO" {% if filtro_estado == 'ACTIVO' %}selected{% endif %}>Activos</option><option value="INACTIVO" {% if filtro_estado == 'INACTIVO' %}selected{% endif %}>Inactivos</option></select></div>
+      <div class="filter-capsule"><label for="filtro-rol">Rol</label><select id="filtro-rol" name="filtro_rol"><option value="">Todos</option>{% for rol in roles_disponibles %}<option value="{{ rol }}" {% if filtro_rol == rol %}selected{% endif %}>{{ rol|capitalize }}</option>{% endfor %}</select></div>
+      <div class="filter-capsule"><label for="filtro-perfil">Perfil</label><select id="filtro-perfil" name="filtro_perfil"><option value="">Todos</option>{% for perfil in perfiles_disponibles %}<option value="{{ perfil }}" {% if filtro_perfil == perfil %}selected{% endif %}>{{ perfil|capitalize }}</option>{% endfor %}</select></div>
+      <button class="ui-btn primary-btn" type="submit"><i class="bi bi-funnel"></i> Aplicar</button>
+      {% if filtro_rol or filtro_perfil %}<a class="ui-btn" href="/configuracion/usuarios"><i class="bi bi-x-lg"></i> Limpiar</a>{% endif %}
+    </form>
     {% if usuarios %}<div class="table-wrap"><table class="ui-table">
       <thead><tr><th>Persona</th><th>Legajo</th><th>Usuario</th><th>Convenio</th><th>Contratación</th><th>Asignaciones</th><th>Estado</th><th class="actions-column">Acciones</th></tr></thead>
       <tbody>{% for usuario in usuarios %}<tr>
         <td data-label="Persona"><span class="person-cell"><span class="avatar">{{ usuario.nombre[0] }}{{ usuario.apellido[0] }}</span><strong>{{ usuario.apellido }}, {{ usuario.nombre }}</strong></span></td>
         <td data-label="Legajo">{{ usuario.legajo or '—' }}</td><td data-label="Usuario"><strong>{{ usuario.username }}</strong><span class="cell-help">{{ usuario.correo or 'Sin correo' }} · {{ usuario.origen }}</span></td><td data-label="Convenio">{{ usuario.convenio or '—' }}</td><td data-label="Contratación">{{ usuario.tipo_contratacion.contratacion if usuario.tipo_contratacion else '—' }}</td><td data-label="Asignaciones">{% for asignacion in usuario.roles %}<span class="type-chip">{{ asignacion.rol }} · {{ asignacion.perfil|capitalize }}</span>{% else %}<span class="muted">Sin asignaciones</span>{% endfor %}</td>
         <td data-label="Estado">{% if usuario.status %}<span class="status-chip success-chip"><i class="bi bi-check-circle"></i> Activo</span>{% else %}<span class="status-chip neutral-chip"><i class="bi bi-pause-circle"></i> Inactivo</span>{% endif %}</td>
-        <td data-label="Acciones" class="actions-column"><a class="ui-btn icon-btn edit-btn" href="/configuracion/usuarios?editar_usuario={{ usuario.id }}#formulario-usuario" aria-label="Editar usuario {{ usuario.username }}" title="Editar usuario"><i class="bi bi-pencil"></i></a></td>
+        <td data-label="Acciones" class="actions-column"><a class="ui-btn icon-btn edit-btn" href="/configuracion/usuarios?editar_usuario={{ usuario.id }}&filtro_estado={{ filtro_estado }}{% if filtro_rol %}&filtro_rol={{ filtro_rol }}{% endif %}{% if filtro_perfil %}&filtro_perfil={{ filtro_perfil }}{% endif %}#formulario-usuario" aria-label="Editar usuario {{ usuario.username }}" title="Editar usuario"><i class="bi bi-pencil"></i></a></td>
       </tr>{% endfor %}</tbody>
     </table></div>{% else %}<div class="empty-state"><i class="bi bi-people"></i><strong>No hay usuarios registrados</strong><span>Completá el formulario para crear el primero.</span></div>{% endif %}
   </section>

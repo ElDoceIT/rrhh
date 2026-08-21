@@ -93,6 +93,11 @@ class HoraExtra(Base):
         nullable=True,
     )
 
+    observacion_rechazo: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
     estado: Mapped[str] = mapped_column(
         String(20),
         nullable=False,
@@ -109,6 +114,11 @@ class HoraExtra(Base):
         DateTime,
         nullable=False,
         default=datetime.now,
+    )
+
+    fecha_resolucion: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
     )
 
     usuario: Mapped["Usuario"] = relationship(

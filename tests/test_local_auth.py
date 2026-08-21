@@ -10,7 +10,7 @@ from sqlalchemy.pool import StaticPool
 from starlette.requests import Request
 
 from app.database.connection import Base
-from app.database.models import ReglaHora, Usuario, UsuarioRol
+from app.database.models import Feriado, HoraExtra, ReglaHora, TipoContratacion, Usuario, UsuarioRol
 from app.services.local_auth import (
     authenticate_local_user,
     is_local_username,
@@ -20,6 +20,7 @@ from app.services.local_auth import (
 from app.services.calculo_horas import (
     CalculoHorasError,
     calcular_horas_totales,
+    calcular_resultado_dia_trabajado,
     calcular_resultado_horas_extra,
     calcular_resultado_otra_carga,
     calcular_resultado_reintegro,
@@ -28,8 +29,14 @@ from app.services.calculo_horas import (
 )
 from app.services.access_catalog import CONVENIOS_DISPONIBLES, PERFILES_DISPONIBLES, ROLES_DISPONIBLES
 from app.main import (
+    confirmar_solicitud,
+    encode_carga,
+    expandir_ids_con_jornadas_pendientes,
     ids_habilitados_para_confirmar,
+    limites_fecha_carga_usuario,
     obtener_autorizador,
+    recalcular_conceptos_jornada_pendiente,
+    rechazar_horas,
     usuarios_habilitados_para_carga,
 )
 from fastapi import HTTPException
@@ -87,6 +94,30 @@ class LocalAuthTests(unittest.TestCase):
         self.assertEqual(PERFILES_DISPONIBLES, ("USUARIO", "JEFE"))
         self.assertEqual(CONVENIOS_DISPONIBLES, ("CISPREN", "SAL", "SAT", "FC"))
 
+    def test_load_date_limits_follow_contract_type(self):
+        nomina = Usuario(
+            nombre="N", apellido="N", username="nomina-periodo",
+            hashed_password="x", origen="AD", status=True,
+            tipo_contratacion=TipoContratacion(contratacion="Nómina"),
+        )
+        monotributo = Usuario(
+            nombre="M", apellido="M", username="mono-periodo",
+            hashed_password="x", origen="AD", status=True,
+            tipo_contratacion=TipoContratacion(contratacion="Monotributo"),
+        )
+        self.assertEqual(
+            limites_fecha_carga_usuario(nomina, date(2026, 8, 10))[:2],
+            (date(2026, 7, 16), date(2026, 8, 15)),
+        )
+        self.assertEqual(
+            limites_fecha_carga_usuario(nomina, date(2026, 8, 21))[:2],
+            (date(2026, 8, 16), date(2026, 9, 15)),
+        )
+        self.assertEqual(
+            limites_fecha_carga_usuario(monotributo, date(2026, 8, 21))[:2],
+            (date(2026, 8, 1), date(2026, 8, 31)),
+        )
+
     def test_session_contains_all_assignments_and_selects_one(self):
         with self.Session() as db:
             user = Usuario(
@@ -110,7 +141,7 @@ class LocalAuthTests(unittest.TestCase):
             self.assertEqual(data["profile"], "JEFE")
             self.assertEqual(data["active_assignment_id"], data["assignments"][0]["id"])
 
-    def test_chief_can_only_load_users_from_active_role(self):
+    def test_only_regular_users_can_load_their_own_hours(self):
         with self.Session() as db:
             jefe = Usuario(nombre="Jefa", apellido="Comercial", username="jefa", hashed_password="x", origen="AD", status=True)
             empleado = Usuario(nombre="Empleado", apellido="Comercial", username="empleado", hashed_password="x", origen="AD", status=True)
@@ -133,13 +164,26 @@ class LocalAuthTests(unittest.TestCase):
                     }
                 },
             })
-            _, terceros = usuarios_habilitados_para_carga(request, db, "otro")
-            self.assertEqual([item.id for item in terceros], [empleado.id])
-            self.assertEqual(ids_habilitados_para_confirmar(request, db), {empleado.id})
+            with self.assertRaisesRegex(HTTPException, "Sólo los usuarios"):
+                usuarios_habilitados_para_carga(request, db, "otro")
+            with self.assertRaisesRegex(HTTPException, "Sólo los usuarios"):
+                ids_habilitados_para_confirmar(request, db)
             actor, assignment, is_admin = obtener_autorizador(request, db)
             self.assertEqual(actor.id, jefe.id)
             self.assertEqual(assignment.rol, "COMERCIAL")
             self.assertFalse(is_admin)
+
+            employee_request = Request({
+                "type": "http", "method": "GET", "path": "/solicitudes/nueva",
+                "headers": [],
+                "session": {"user": {
+                    "id": empleado.id,
+                    "active_assignment_id": empleado.roles[0].id_rol,
+                }},
+            })
+            _, allowed = usuarios_habilitados_para_carga(employee_request, db, "otro")
+            self.assertEqual([item.id for item in allowed], [empleado.id])
+            self.assertEqual(ids_habilitados_para_confirmar(employee_request, db), {empleado.id})
 
     def test_regular_user_cannot_access_authorizations_and_admin_can(self):
         with self.Session() as db:
@@ -161,6 +205,74 @@ class LocalAuthTests(unittest.TestCase):
             _, assignment, is_admin = obtener_autorizador(request_for(admin), db)
             self.assertEqual(assignment.rol, "ADMIN")
             self.assertTrue(is_admin)
+
+    def test_rejection_saves_its_own_observation_and_resolution_date(self):
+        with self.Session() as db:
+            jefe = Usuario(nombre="Jefa", apellido="Comercial", username="jefa-rechazo", hashed_password="x", origen="AD", status=True)
+            empleado = Usuario(nombre="Empleado", apellido="Comercial", username="empleado-rechazo", hashed_password="x", origen="AD", status=True)
+            jefe.roles.append(UsuarioRol(rol="COMERCIAL", perfil="JEFE"))
+            empleado.roles.append(UsuarioRol(rol="COMERCIAL", perfil="USUARIO"))
+            db.add_all([jefe, empleado])
+            db.flush()
+            hora = HoraExtra(
+                usuario_id=empleado.id, fecha=date(2026, 8, 21),
+                hora_inicio=time(18, 0), hora_fin=time(20, 0),
+                horas_totales=Decimal("2.00"), tipo_dia="HABIL",
+                tipo_hora="50", estado="PENDIENTE",
+            )
+            db.add(hora)
+            db.commit()
+            request = Request({
+                "type": "http", "method": "POST", "path": "/autorizaciones/rechazar",
+                "headers": [],
+                "session": {"user": {
+                    "id": jefe.id,
+                    "active_assignment_id": jefe.roles[0].id_rol,
+                }},
+            })
+
+            response = rechazar_horas(
+                request=request,
+                hora_ids=[hora.id],
+                fila_ids=[hora.id],
+                observaciones_rechazo=["  Horario sin justificar  "],
+                db=db,
+            )
+
+            db.refresh(hora)
+            self.assertEqual(response.status_code, 303)
+            self.assertEqual(hora.estado, "RECHAZADA")
+            self.assertEqual(hora.aprobado_por, jefe.id)
+            self.assertEqual(hora.observacion_rechazo, "Horario sin justificar")
+            self.assertIsNotNone(hora.fecha_resolucion)
+
+    def test_confirmation_rejects_a_load_without_observation(self):
+        with self.Session() as db:
+            user = Usuario(
+                nombre="Ana", apellido="Pérez", username="sin-observacion",
+                hashed_password="x", origen="AD", convenio="SAT", status=True,
+            )
+            user.roles.append(UsuarioRol(rol="COMERCIAL", perfil="USUARIO"))
+            db.add_all([
+                user,
+                ReglaHora(convenio="SAT", tipo_dia="HABIL", tipo_hora="50"),
+            ])
+            db.commit()
+            request = Request({
+                "type": "http", "method": "POST", "path": "/solicitudes/confirmar",
+                "headers": [],
+                "session": {"user": {
+                    "id": user.id,
+                    "active_assignment_id": user.roles[0].id_rol,
+                }},
+            })
+            carga = encode_carga(
+                user.id, date(2026, 8, 21), time(18, 0), time(20, 0), None,
+            )
+            with self.assertRaisesRegex(HTTPException, "observación"):
+                confirmar_solicitud(
+                    request=request, cargas=[carga], reintegros=["NO"], db=db,
+                )
 
 
 class MidnightSplitTests(unittest.TestCase):
@@ -206,6 +318,48 @@ class ReintegroTests(unittest.TestCase):
             self.assertEqual(clasificar_tipo_dia(date(2026, 8, 8), db), "HABIL")
             self.assertEqual(clasificar_tipo_dia(date(2026, 8, 9), db), "HABIL")
 
+    def test_worked_day_requires_holiday_or_explicit_franco(self):
+        with self.Session() as db:
+            user = Usuario(
+                nombre="Ana", apellido="Pérez", username="aperez-dia-trabajado",
+                hashed_password="x", origen="AD", convenio="SAT", status=True,
+            )
+            db.add(user)
+            db.commit()
+            with self.assertRaisesRegex(CalculoHorasError, "Indicá que corresponde a un franco"):
+                calcular_resultado_dia_trabajado(
+                    user.id, date(2026, 8, 21), db,
+                )
+            result = calcular_resultado_dia_trabajado(
+                user.id, date(2026, 8, 21), db, marcar_como_franco=True,
+            )
+            self.assertEqual(result.tipo_registro, "DIA_TRABAJADO")
+            self.assertEqual(result.tipo_dia, "FRANCO")
+            self.assertIsNone(result.horas_totales)
+
+    def test_holiday_takes_precedence_over_franco_checkbox(self):
+        with self.Session() as db:
+            holiday = date(2026, 8, 17)
+            user = Usuario(
+                nombre="Ana", apellido="Pérez", username="aperez-feriado",
+                hashed_password="x", origen="AD", convenio="SAT", status=True,
+            )
+            db.add_all([
+                user,
+                Feriado(fecha=holiday, observacion="Feriado de prueba"),
+                ReglaHora(convenio="SAT", tipo_dia="FERIADO", tipo_hora="100"),
+            ])
+            db.commit()
+            worked_day = calcular_resultado_dia_trabajado(
+                user.id, holiday, db, marcar_como_franco=True,
+            )
+            extra_hours = calcular_resultado_horas_extra(
+                user.id, holiday, time(18, 0), time(20, 0), db,
+                marcar_como_franco=True,
+            )
+            self.assertEqual(worked_day.tipo_dia, "FERIADO")
+            self.assertEqual(extra_hours.tipo_dia, "FERIADO")
+
     def test_otra_carga_uses_manual_quantity_without_hour_calculation(self):
         with self.Session() as db:
             user = Usuario(
@@ -225,6 +379,36 @@ class ReintegroTests(unittest.TestCase):
             self.assertEqual(result.cantidad, Decimal("8.00"))
             self.assertIsNone(result.hora_inicio)
             self.assertIsNone(result.horas_totales)
+
+    def test_exterior_prensa_only_accepts_three_or_six(self):
+        with self.Session() as db:
+            user = Usuario(
+                nombre="Ana", apellido="Pérez", username="aperez-exterior",
+                hashed_password="x", origen="AD", convenio="SAT", status=True,
+            )
+            db.add_all([
+                user,
+                ReglaHora(
+                    convenio="SAT", tipo_dia="TODOS", tipo_hora="EXTERIOR PRENSA",
+                ),
+                ReglaHora(
+                    convenio="SAT", tipo_dia="TODOS", tipo_hora="EXTERIOR COMUN",
+                ),
+            ])
+            db.commit()
+            for cantidad in (Decimal("3"), Decimal("6")):
+                result = calcular_resultado_otra_carga(
+                    user.id, date(2026, 8, 10), "EXTERIOR PRENSA", cantidad, db,
+                )
+                self.assertEqual(result.cantidad, cantidad.quantize(Decimal("0.01")))
+            with self.assertRaisesRegex(CalculoHorasError, "sólo admite"):
+                calcular_resultado_otra_carga(
+                    user.id, date(2026, 8, 10), "EXTERIOR PRENSA", Decimal("4"), db,
+                )
+            comun = calcular_resultado_otra_carga(
+                user.id, date(2026, 8, 10), "EXTERIOR COMUN", Decimal("4"), db,
+            )
+            self.assertEqual(comun.cantidad, Decimal("4.00"))
 
     def test_hours_can_be_marked_as_franco_explicitly(self):
         with self.Session() as db:
@@ -260,6 +444,29 @@ class ReintegroTests(unittest.TestCase):
             result = calcular_resultado_reintegro(user.id, date(2026, 8, 10), db)
             self.assertEqual(result.tipo_dia, "FRANCO")
 
+    def test_holiday_without_return_rejects_reimbursement(self):
+        with self.Session() as db:
+            holiday = date(2026, 8, 17)
+            user = Usuario(
+                nombre="Ana", apellido="Pérez", username="aperez-sin-devolucion",
+                hashed_password="x", origen="AD", convenio="SAT", status=True,
+            )
+            db.add_all([
+                user,
+                Feriado(
+                    fecha=holiday,
+                    observacion="Feriado sin devolución",
+                    devuelve=False,
+                ),
+                ReglaHora(
+                    convenio="SAT", tipo_dia="FERIADO", tipo_hora="100",
+                    permite_reintegro=True,
+                ),
+            ])
+            db.commit()
+            with self.assertRaisesRegex(CalculoHorasError, "no permite solicitar reintegro"):
+                calcular_resultado_reintegro(user.id, holiday, db)
+
     def test_crossing_midnight_creates_two_real_date_segments(self):
         segments = dividir_carga_en_fechas(
             date(2026, 8, 6), time(22, 0), time(3, 0)
@@ -270,6 +477,83 @@ class ReintegroTests(unittest.TestCase):
         ])
         self.assertEqual(calcular_horas_totales(*segments[0][1:]), Decimal("2.00"))
         self.assertEqual(calcular_horas_totales(*segments[1][1:]), Decimal("3.00"))
+
+    def test_meals_are_recalculated_per_pending_journey(self):
+        with self.Session() as db:
+            user = Usuario(
+                nombre="Ana", apellido="Pérez", username="aperez-comidas",
+                hashed_password="x", origen="AD", convenio="SAT", status=True,
+            )
+            db.add_all([
+                user,
+                ReglaHora(convenio="SAT", tipo_dia="TODOS", tipo_hora="MERIENDA"),
+                ReglaHora(convenio="SAT", tipo_dia="TODOS", tipo_hora="COMIDA"),
+            ])
+            db.flush()
+            db.add_all([
+                HoraExtra(
+                    usuario_id=user.id, fecha=date(2026, 8, 20),
+                    hora_inicio=time(22), hora_fin=time(0),
+                    horas_totales=Decimal("2"), tipo_dia="HABIL",
+                    tipo_hora="50", tipo_registro="HORAS", estado="PENDIENTE",
+                ),
+                HoraExtra(
+                    usuario_id=user.id, fecha=date(2026, 8, 21),
+                    hora_inicio=time(0), hora_fin=time(3),
+                    horas_totales=Decimal("3"), tipo_dia="HABIL",
+                    tipo_hora="50", tipo_registro="HORAS", estado="PENDIENTE",
+                ),
+                HoraExtra(
+                    usuario_id=user.id, fecha=date(2026, 8, 21),
+                    hora_inicio=time(18), hora_fin=time(20),
+                    horas_totales=Decimal("2"), tipo_dia="HABIL",
+                    tipo_hora="50", tipo_registro="HORAS", estado="PENDIENTE",
+                ),
+            ])
+            db.flush()
+            recalcular_conceptos_jornada_pendiente(user.id, date(2026, 8, 20), db)
+            recalcular_conceptos_jornada_pendiente(user.id, date(2026, 8, 21), db)
+            db.flush()
+            concepts = list(db.query(HoraExtra).filter(
+                HoraExtra.tipo_registro == "OTRAS",
+            ).order_by(HoraExtra.fecha, HoraExtra.tipo_hora))
+            self.assertEqual(
+                [(item.fecha, item.tipo_hora, item.cantidad) for item in concepts],
+                [
+                    (date(2026, 8, 20), "COMIDA", Decimal("1.00")),
+                    (date(2026, 8, 20), "MERIENDA", Decimal("2.00")),
+                    (date(2026, 8, 21), "MERIENDA", Decimal("1.00")),
+                ],
+            )
+            selected_hour = db.query(HoraExtra).filter(
+                HoraExtra.fecha == date(2026, 8, 20),
+                HoraExtra.tipo_registro == "HORAS",
+            ).one()
+            expanded = expandir_ids_con_jornadas_pendientes([selected_hour.id], db)
+            self.assertEqual(len(expanded), 4)
+            approved_meal = HoraExtra(
+                usuario_id=user.id, fecha=date(2026, 8, 20),
+                cantidad=Decimal("1"), tipo_dia="TODOS", tipo_hora="COMIDA",
+                tipo_registro="OTRAS", estado="APROBADA",
+            )
+            db.add(approved_meal)
+            for item in db.query(HoraExtra).filter(
+                HoraExtra.tipo_registro == "HORAS",
+                HoraExtra.estado == "PENDIENTE",
+            ):
+                db.delete(item)
+            db.flush()
+            recalcular_conceptos_jornada_pendiente(user.id, date(2026, 8, 20), db)
+            recalcular_conceptos_jornada_pendiente(user.id, date(2026, 8, 21), db)
+            db.flush()
+            self.assertEqual(db.query(HoraExtra).filter(
+                HoraExtra.tipo_registro == "OTRAS",
+                HoraExtra.estado == "PENDIENTE",
+            ).count(), 0)
+            self.assertEqual(db.query(HoraExtra).filter(
+                HoraExtra.id == approved_meal.id,
+                HoraExtra.estado == "APROBADA",
+            ).count(), 1)
 
     def test_same_day_and_exact_midnight_remain_one_segment(self):
         fecha = date(2026, 8, 6)

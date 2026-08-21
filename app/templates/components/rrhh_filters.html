@@ -1,0 +1,25 @@
+{% macro rrhh_periodos(periodo_activo, periodos_rapidos) -%}
+<div class="rrhh-periods">
+  <a class="period-card {{ 'active' if periodo_activo == 'nomina' else '' }}" href="{{ request.url.path }}?periodo=nomina">
+    <span class="period-icon"><i class="bi bi-people"></i></span>
+    <span><strong>Nómina</strong><small>Del {{ periodos_rapidos.nomina[0].strftime('%d/%m/%Y') }} al {{ periodos_rapidos.nomina[1].strftime('%d/%m/%Y') }}</small></span>
+    {% if periodo_activo == 'nomina' %}<i class="bi bi-check-circle-fill"></i>{% endif %}
+  </a>
+  <a class="period-card {{ 'active' if periodo_activo == 'monotributo' else '' }}" href="{{ request.url.path }}?periodo=monotributo">
+    <span class="period-icon"><i class="bi bi-person-badge"></i></span>
+    <span><strong>Monotributo</strong><small>Del {{ periodos_rapidos.monotributo[0].strftime('%d/%m/%Y') }} al {{ periodos_rapidos.monotributo[1].strftime('%d/%m/%Y') }}</small></span>
+    {% if periodo_activo == 'monotributo' %}<i class="bi bi-check-circle-fill"></i>{% endif %}
+  </a>
+</div>
+{%- endmacro %}
+
+{% macro rrhh_filters(fecha_desde, fecha_hasta, tipos_contratacion, contrataciones_seleccionadas, convenios, convenios_seleccionados) -%}
+<form method="get" class="rrhh-filters">
+  <input type="hidden" name="periodo" value="manual">
+  <label class="field"><span>Fecha desde</span><input type="date" name="fecha_desde" value="{{ fecha_desde.isoformat() if fecha_desde else '' }}"></label>
+  <label class="field"><span>Fecha hasta</span><input type="date" name="fecha_hasta" value="{{ fecha_hasta.isoformat() if fecha_hasta else '' }}"></label>
+  <label class="field"><span>Tipo de contratación</span><select name="contratacion" multiple size="4">{% for tipo in tipos_contratacion %}<option value="{{ tipo.id_tipo_contratacion }}" {% if tipo.id_tipo_contratacion in contrataciones_seleccionadas %}selected{% endif %}>{{ tipo.contratacion }}</option>{% endfor %}</select><small>Podés seleccionar más de una opción.</small></label>
+  <label class="field"><span>Convenio</span><select name="convenio" multiple size="4">{% for convenio in convenios %}<option value="{{ convenio }}" {% if convenio in convenios_seleccionados %}selected{% endif %}>{{ convenio }}</option>{% endfor %}</select><small>Podés seleccionar más de una opción.</small></label>
+  <div class="form-actions rrhh-filter-actions"><button class="ui-btn primary-btn" type="submit"><i class="bi bi-funnel"></i> Aplicar filtros</button><a class="ui-btn" href="{{ request.url.path }}"><i class="bi bi-x-lg"></i> Limpiar</a></div>
+</form>
+{%- endmacro %}

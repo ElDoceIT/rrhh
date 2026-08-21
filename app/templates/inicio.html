@@ -5,12 +5,9 @@
   <section class="card start-card">
     <span class="start-icon"><i class="bi bi-clock-history"></i></span>
     <span class="eyebrow">{{ rol_activo|capitalize }}</span>
-    <h1>¿Qué horas querés cargar?</h1>
+    <h1>{{ 'Autorización de horas extras' if es_jefe else '¿Qué horas querés cargar?' }}</h1>
     {% if es_jefe %}
-    <p>Cargá horas para un usuario de {{ rol_activo|capitalize }}.</p>
-    <div class="start-actions">
-      <a class="ui-btn primary-btn start-button" href="/solicitudes/nueva?destino=otro"><i class="bi bi-people"></i> Cargar horas a otro usuario</a>
-    </div>
+    <p>Revisá las solicitudes del rol {{ rol_activo|capitalize }} para autorizarlas o rechazarlas.</p>
     {% else %}
     <p>Registrá una nueva jornada de horas extras.</p>
     <a class="ui-btn primary-btn start-button" href="/solicitudes/nueva?destino=propio"><i class="bi bi-plus-lg"></i> Cargar horas</a>
@@ -20,7 +17,7 @@
       <article class="pending-card"><span class="pending-card-count">{{ cargas_pendientes }}</span><span><strong>cargas tuyas pendientes</strong><small>Solicitudes propias que todavía no fueron resueltas.</small></span></article>
       {% endif %}
       {% if es_jefe or es_admin %}<a class="pending-card pending-card-link" href="/autorizaciones"><span class="pending-card-count">{{ autorizaciones_pendientes }}</span><span><strong>pendientes de autorizar</strong><small>{{ 'Solicitudes de todos los roles.' if es_admin else 'Solicitudes del rol ' ~ (rol_activo|capitalize) ~ '.' }}</small></span><i class="bi bi-chevron-right"></i></a>{% endif %}
-      <a class="ui-btn start-button" href="/horas"><i class="bi bi-clock-history"></i> Historial de cargas</a>
+      {% if not es_jefe %}<a class="ui-btn start-button" href="/horas"><i class="bi bi-clock-history"></i> Historial de cargas</a>{% endif %}
     </div>
   </section>
 </div>

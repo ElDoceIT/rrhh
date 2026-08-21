@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% from "components/rrhh_filters.html" import rrhh_filters, rrhh_periodos with context %}
+{% block title %}RRHH · Horas Extras{% endblock %}
+{% block content %}
+<div class="container">
+  <header class="page-header"><div><span class="eyebrow">RRHH</span><h1>Horas Extras</h1><p>Vista previa de cargas pendientes y autorizadas.</p></div></header>
+  <section class="card form-card">
+    <div class="section-heading section-heading-pill"><h2>Período rápido</h2></div>
+    {{ rrhh_periodos(periodo_activo, periodos_rapidos) }}
+  </section>
+  <section class="card form-card">
+    <div class="section-heading section-heading-pill"><h2>Filtros avanzados</h2></div>
+    {{ rrhh_filters(fecha_desde, fecha_hasta, tipos_contratacion, contrataciones_seleccionadas, convenios, convenios_seleccionados) }}
+  </section>
+  <section class="result-summary">
+    <article class="summary-card"><span>Pendientes</span><strong>{{ pendientes }}</strong><small>cargas por autorizar</small></article>
+    <article class="summary-card"><span>Autorizadas</span><strong>{{ autorizadas }}</strong><small>cargas aprobadas</small></article>
+    <article class="summary-card"><span>Total visible</span><strong>{{ horas|length }}</strong><small>registros filtrados</small></article>
+  </section>
+  <section class="card">
+    <div class="section-heading section-heading-pill"><h2>Vista previa</h2><span class="count-chip">{{ horas|length }}</span></div>
+    {% if horas %}<div class="table-wrap"><table class="ui-table">
+      <thead><tr><th>Fecha</th><th>Legajo</th><th>Persona</th><th>Contratación</th><th>Convenio</th><th>Registro</th><th>Tipo de hora</th><th>Cantidad</th><th>Estado</th></tr></thead>
+      <tbody>{% for hora in horas %}<tr>
+        <td data-label="Fecha"><strong>{{ hora.fecha.strftime('%d/%m/%Y') }}</strong></td>
+        <td data-label="Legajo">{{ hora.usuario.legajo or '—' }}</td>
+        <td data-label="Persona">{{ hora.usuario.nombre }} {{ hora.usuario.apellido }}</td>
+        <td data-label="Contratación">{{ hora.usuario.tipo_contratacion.contratacion if hora.usuario.tipo_contratacion else '—' }}</td>
+        <td data-label="Convenio">{{ hora.usuario.convenio or '—' }}</td>
+        <td data-label="Registro">{{ 'Día trabajado' if hora.tipo_registro == 'DIA_TRABAJADO' else ('Reintegro' if hora.tipo_registro == 'REINTEGRO' else ('Otras cargas' if hora.tipo_registro == 'OTRAS' else 'Horas extras')) }}</td>
+        <td data-label="Tipo de hora">{{ hora.tipo_hora or '—' }}</td>
+        <td data-label="Cantidad">{% if hora.cantidad is not none %}{{ '%.2f'|format(hora.cantidad) }}{% elif hora.horas_totales is not none %}{{ '%.2f'|format(hora.horas_totales) }} h{% else %}—{% endif %}</td>
+        <td data-label="Estado">{% if hora.estado == 'APROBADA' %}<span class="status-chip success-chip">Autorizada</span>{% else %}<span class="status-chip info-chip">Pendiente</span>{% endif %}</td>
+      </tr>{% endfor %}</tbody>
+    </table></div>{% else %}<div class="empty-state"><i class="bi bi-clock-history"></i><strong>No hay cargas para estos filtros</strong><span>Modificá el período o las opciones seleccionadas.</span></div>{% endif %}
+  </section>
+</div>
+{% endblock %}

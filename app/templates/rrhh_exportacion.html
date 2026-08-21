@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% from "components/rrhh_filters.html" import rrhh_filters, rrhh_periodos with context %}
+{% block title %}RRHH · Exportación{% endblock %}
+{% block content %}
+<div class="container">
+  <header class="page-header"><div><span class="eyebrow">RRHH</span><h1>Exportación</h1><p>Resumen de cargas autorizadas, acumuladas por persona y tipo de hora.</p></div>{% if filas %}<a class="ui-btn primary-btn" href="/rrhh/exportacion.xlsx{% if request.url.query %}?{{ request.url.query }}{% endif %}"><i class="bi bi-file-earmark-excel"></i> Descargar XLSX</a>{% endif %}</header>
+  <section class="card form-card">
+    <div class="section-heading section-heading-pill"><h2>Período rápido</h2></div>
+    {{ rrhh_periodos(periodo_activo, periodos_rapidos) }}
+  </section>
+  <section class="card form-card">
+    <div class="section-heading section-heading-pill"><h2>Filtros avanzados</h2></div>
+    {{ rrhh_filters(fecha_desde, fecha_hasta, tipos_contratacion, contrataciones_seleccionadas, convenios, convenios_seleccionados) }}
+  </section>
+  <section class="card">
+    <div class="section-heading section-heading-pill"><h2>Vista previa</h2><span class="count-chip">{{ filas|length }}</span></div>
+    {% if filas %}<div class="table-wrap"><table class="ui-table">
+      <thead><tr><th>Legajo</th><th>Nombre y apellido</th><th>Tipo de hora</th><th>Cantidad de horas</th></tr></thead>
+      <tbody>{% for fila in filas %}<tr>
+        <td data-label="Legajo">{{ fila.legajo or '—' }}</td>
+        <td data-label="Nombre y apellido"><strong>{{ fila.nombre }} {{ fila.apellido }}</strong></td>
+        <td data-label="Tipo de hora"><span class="type-chip">{{ fila.tipo_hora }}</span></td>
+        <td data-label="Cantidad de horas"><strong>{{ '%.2f'|format(fila.cantidad) }}</strong></td>
+      </tr>{% endfor %}</tbody>
+    </table></div>{% else %}<div class="empty-state"><i class="bi bi-file-earmark-spreadsheet"></i><strong>No hay datos autorizados para exportar</strong><span>Modificá el período o las opciones seleccionadas.</span></div>{% endif %}
+  </section>
+</div>
+{% endblock %}

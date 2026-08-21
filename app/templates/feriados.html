@@ -13,6 +13,7 @@
     <form method="post" action="{% if feriado_edicion %}/configuracion/feriados/{{ feriado_edicion.id }}{% else %}/configuracion/feriados{% endif %}" class="holiday-form">
       <label class="field"><span>Fecha *</span><input type="date" name="fecha" required value="{{ feriado_edicion.fecha.isoformat() if feriado_edicion else '' }}"></label>
       <label class="field"><span>Feriado / conmemoración *</span><input name="observacion" maxlength="200" required placeholder="Ej.: Día del Trabajador" value="{{ feriado_edicion.observacion if feriado_edicion else '' }}"></label>
+      <label class="check-field"><input type="checkbox" name="devuelve" {% if not feriado_edicion or feriado_edicion.devuelve %}checked{% endif %}><span><strong>Devuelve</strong><small>Este feriado genera devolución del día.</small></span></label>
       <div class="form-actions">{% if feriado_edicion %}<a class="ui-btn" href="/configuracion/feriados">Cancelar</a>{% endif %}<button class="ui-btn primary-btn" type="submit"><i class="bi bi-check-lg"></i> {% if feriado_edicion %}Guardar cambios{% else %}Agregar feriado{% endif %}</button></div>
     </form>
   </section>
@@ -20,8 +21,8 @@
   <section class="card">
     <div class="section-heading section-heading-pill"><h2>Fechas configuradas</h2><span class="count-chip">{{ feriados|length }}</span></div>
     {% if feriados %}<div class="table-wrap"><table class="ui-table">
-      <thead><tr><th>Fecha</th><th>Feriado / conmemoración</th><th>Día</th><th class="actions-column">Acciones</th></tr></thead>
-      <tbody>{% for feriado in feriados %}<tr><td data-label="Fecha"><strong>{{ feriado.fecha.strftime('%d/%m/%Y') }}</strong></td><td data-label="Feriado">{{ feriado.observacion }}</td><td data-label="Día"><span class="type-chip">{{ ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo'][feriado.fecha.weekday()] }}</span></td><td data-label="Acciones" class="actions-column"><a class="ui-btn icon-btn edit-btn" href="/configuracion/feriados?editar={{ feriado.id }}#formulario-feriado" aria-label="Editar {{ feriado.observacion }}" title="Editar feriado"><i class="bi bi-pencil"></i></a></td></tr>{% endfor %}</tbody>
+      <thead><tr><th>Fecha</th><th>Feriado / conmemoración</th><th>Día</th><th>Devuelve</th><th class="actions-column">Acciones</th></tr></thead>
+      <tbody>{% for feriado in feriados %}<tr><td data-label="Fecha"><strong>{{ feriado.fecha.strftime('%d/%m/%Y') }}</strong></td><td data-label="Feriado">{{ feriado.observacion }}</td><td data-label="Día"><span class="type-chip">{{ ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo'][feriado.fecha.weekday()] }}</span></td><td data-label="Devuelve">{% if feriado.devuelve %}<span class="status-chip success-chip"><i class="bi bi-check-lg"></i> Sí</span>{% else %}<span class="muted">No</span>{% endif %}</td><td data-label="Acciones" class="actions-column"><a class="ui-btn icon-btn edit-btn" href="/configuracion/feriados?editar={{ feriado.id }}#formulario-feriado" aria-label="Editar {{ feriado.observacion }}" title="Editar feriado"><i class="bi bi-pencil"></i></a></td></tr>{% endfor %}</tbody>
     </table></div>{% else %}<div class="empty-state"><i class="bi bi-calendar-x"></i><strong>No hay feriados configurados</strong><span>Agregá una fecha para comenzar.</span></div>{% endif %}
   </section>
 </div>

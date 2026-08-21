@@ -172,6 +172,24 @@ document.querySelectorAll(".request-form").forEach((form) => {
     updateEndTime();
   };
 
+  const extraDates = form.querySelector("[data-extra-dates]");
+  form.querySelector("[data-add-date]")?.addEventListener("click", () => {
+    if (!extraDates) return;
+    const entry = document.createElement("div");
+    entry.className = "date-entry additional-date hours-only-field";
+    entry.innerHTML = `
+      <label class="field">
+        <span>Otra fecha *</span>
+        <input type="date" name="fecha" ${form.dataset.dateMin ? `min="${form.dataset.dateMin}"` : ""} ${form.dataset.dateMax ? `max="${form.dataset.dateMax}"` : ""} required>
+      </label>
+      <button class="ui-btn icon-btn danger-btn" type="button" aria-label="Quitar fecha" title="Quitar fecha">
+        <i class="bi bi-trash"></i>
+      </button>`;
+    entry.querySelector("button").addEventListener("click", () => entry.remove());
+    extraDates.appendChild(entry);
+    entry.querySelector("input").focus();
+  });
+
   form.querySelector("[data-duration-down]")?.addEventListener("click", () => changeDuration(-0.5));
   form.querySelector("[data-duration-up]")?.addEventListener("click", () => changeDuration(0.5));
   startInput.addEventListener("change", updateEndTime);
@@ -183,14 +201,51 @@ document.querySelectorAll(".request-form").forEach((form) => {
     if (hours >= 0.5 && hours <= 16) durationInput.value = String(Math.round(hours * 2) / 2);
   });
 
+  const reimbursementInput = form.querySelector("[data-request-reimbursement]");
+  const reimbursementHelp = form.querySelector("[data-reimbursement-help]");
+  const primaryDate = form.querySelector('input[name="fecha"]');
+  const holidaysWithoutReturn = new Set(
+    (form.dataset.holidaysNoReturn || "").split(",").filter(Boolean),
+  );
+  const defaultReimbursementHelp = reimbursementHelp?.textContent || "";
+  const updateReimbursementAvailability = (isWorkedDay) => {
+    if (!reimbursementInput) return;
+    const unavailable = holidaysWithoutReturn.has(primaryDate?.value || "");
+    reimbursementInput.disabled = !isWorkedDay || unavailable;
+    if (unavailable) reimbursementInput.checked = false;
+    reimbursementInput.closest(".check-field")?.classList.toggle(
+      "disabled-option", unavailable,
+    );
+    if (reimbursementHelp) {
+      reimbursementHelp.textContent = unavailable
+        ? "Este feriado no genera devolución del día."
+        : defaultReimbursementHelp;
+    }
+  };
+
   const updateRecordType = () => {
     const recordType = form.querySelector('input[name="tipo_registro"]:checked')?.value;
     const isHours = recordType === "HORAS";
+    const isWorkedDay = recordType === "DIA_TRABAJADO";
     const isOther = recordType === "OTRAS";
+    const includesExtra = form.querySelector("[data-include-extra]")?.checked ?? false;
+    const showsExtraTime = isHours || (isWorkedDay && includesExtra);
     form.querySelectorAll(".hours-only-field").forEach((field) => {
       field.classList.toggle("hidden", !isHours);
       field.querySelectorAll("select, input, button").forEach((control) => {
         control.disabled = !isHours;
+      });
+    });
+    form.querySelectorAll(".day-worked-only-field").forEach((field) => {
+      field.classList.toggle("hidden", !isWorkedDay);
+      field.querySelectorAll("select, input, button").forEach((control) => {
+        control.disabled = !isWorkedDay;
+      });
+    });
+    form.querySelectorAll(".extra-time-fields").forEach((fields) => {
+      fields.classList.toggle("hidden", !showsExtraTime);
+      fields.querySelectorAll("select, input, button").forEach((control) => {
+        control.disabled = !showsExtraTime;
       });
     });
     form.querySelectorAll(".other-only-field").forEach((field) => {
@@ -199,8 +254,12 @@ document.querySelectorAll(".request-form").forEach((form) => {
         control.disabled = !isOther;
       });
     });
+    updateReimbursementAvailability(isWorkedDay);
+    updateOtherQuantityMode();
   };
   const otherQuantity = form.querySelector("[data-other-quantity]");
+  const exteriorQuantity = form.querySelector("[data-exterior-quantity]");
+  const standardQuantity = form.querySelector("[data-standard-quantity]");
   const userSelect = form.querySelector('select[name="usuario_id"]');
   const otherTypeSelect = form.querySelector('select[name="tipo_otra_carga"]');
   const updateOtherTypes = () => {
@@ -217,6 +276,18 @@ document.querySelectorAll(".request-form").forEach((form) => {
       option.disabled = !isAllowed;
       if (!isAllowed && option.selected) otherTypeSelect.value = "";
     });
+    updateOtherQuantityMode();
+  };
+  const updateOtherQuantityMode = () => {
+    const isOther = form.querySelector('input[name="tipo_registro"]:checked')?.value === "OTRAS";
+    const isExterior = (otherTypeSelect?.value || "").trim().toUpperCase() === "EXTERIOR PRENSA";
+    standardQuantity?.classList.toggle("hidden", isExterior);
+    exteriorQuantity?.classList.toggle("hidden", !isExterior);
+    if (otherQuantity) otherQuantity.disabled = !isOther || isExterior;
+    standardQuantity?.querySelectorAll("button").forEach((button) => {
+      button.disabled = !isOther || isExterior;
+    });
+    if (exteriorQuantity) exteriorQuantity.disabled = !isOther || !isExterior;
   };
   const changeOtherQuantity = (delta) => {
     if (!otherQuantity) return;
@@ -225,7 +296,10 @@ document.querySelectorAll(".request-form").forEach((form) => {
   };
   form.querySelector("[data-other-quantity-down]")?.addEventListener("click", () => changeOtherQuantity(-1));
   form.querySelector("[data-other-quantity-up]")?.addEventListener("click", () => changeOtherQuantity(1));
+  form.querySelector("[data-include-extra]")?.addEventListener("change", updateRecordType);
+  primaryDate?.addEventListener("change", updateRecordType);
   userSelect?.addEventListener("change", updateOtherTypes);
+  otherTypeSelect?.addEventListener("change", updateOtherQuantityMode);
   form.querySelectorAll('input[name="tipo_registro"]').forEach((radio) => {
     radio.addEventListener("change", updateRecordType);
   });

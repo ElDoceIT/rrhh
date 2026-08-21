@@ -33,7 +33,7 @@ class ResultadoHorasExtra:
     horas_totales: Decimal | None
     horas_nocturnas: Decimal | None
     permite_reintegro: bool
-    regla_id: int
+    regla_id: int | None
     tipo_registro: str = "HORAS"
     cantidad: Decimal | None = None
 
@@ -56,6 +56,43 @@ def clasificar_tipo_dia(fecha: date, db: Session) -> str:
     if existe_feriado is not None:
         return "FERIADO"
     return "HABIL"
+
+
+def calcular_resultado_dia_trabajado(
+    usuario_id: int,
+    fecha: date,
+    db: Session,
+    marcar_como_franco: bool = False,
+) -> ResultadoHorasExtra:
+    usuario = db.get(Usuario, usuario_id)
+    if usuario is None or not usuario.status:
+        raise CalculoHorasError("El usuario seleccionado no existe o está inactivo.")
+    if not usuario.convenio:
+        raise CalculoHorasError("El usuario no tiene un convenio asignado.")
+    feriado = db.scalar(select(Feriado).where(Feriado.fecha == fecha).limit(1))
+    tipo_dia = "FERIADO" if feriado is not None else "HABIL"
+    if tipo_dia != "FERIADO":
+        if not marcar_como_franco:
+            raise CalculoHorasError(
+                "La fecha no es feriado. Indicá que corresponde a un franco."
+            )
+        tipo_dia = "FRANCO"
+    return ResultadoHorasExtra(
+        usuario_id=usuario.id,
+        usuario_nombre=f"{usuario.apellido}, {usuario.nombre}",
+        legajo=usuario.legajo,
+        convenio=usuario.convenio,
+        fecha=fecha,
+        hora_inicio=None,
+        hora_fin=None,
+        tipo_dia=tipo_dia,
+        tipo_hora=None,
+        horas_totales=None,
+        horas_nocturnas=None,
+        permite_reintegro=feriado.devuelve if feriado is not None else True,
+        regla_id=None,
+        tipo_registro="DIA_TRABAJADO",
+    )
 
 
 def calcular_horas_totales(hora_inicio: time, hora_fin: time) -> Decimal:
@@ -173,6 +210,10 @@ def calcular_resultado_otra_carga(
     tipo_hora_normalizado = tipo_hora.strip().upper()
     if tipo_hora_normalizado in {"COMIDA", "MERIENDA"}:
         raise CalculoHorasError("El tipo de carga seleccionado no está permitido.")
+    if tipo_hora_normalizado == "EXTERIOR PRENSA" and cantidad not in {
+        Decimal("3"), Decimal("6"),
+    }:
+        raise CalculoHorasError("EXTERIOR PRENSA sólo admite una cantidad de 3 o 6.")
     if cantidad <= 0:
         raise CalculoHorasError("La cantidad debe ser mayor que cero.")
     regla = db.scalar(
@@ -235,7 +276,9 @@ def calcular_resultado_horas_extra(
         raise CalculoHorasError("El usuario no tiene un convenio asignado.")
 
     horas_totales = calcular_horas_totales(hora_inicio, hora_fin)
-    tipo_dia = "FRANCO" if marcar_como_franco else clasificar_tipo_dia(fecha, db)
+    tipo_dia = clasificar_tipo_dia(fecha, db)
+    if tipo_dia != "FERIADO" and marcar_como_franco:
+        tipo_dia = "FRANCO"
     regla = obtener_regla_horas(usuario.convenio, tipo_dia, db)
     horas_nocturnas = calcular_horas_nocturnas(
         hora_inicio,
@@ -274,7 +317,10 @@ def calcular_resultado_reintegro(
     if not usuario.convenio:
         raise CalculoHorasError("El usuario no tiene un convenio asignado.")
 
-    tipo_dia = clasificar_tipo_dia(fecha, db)
+    feriado = db.scalar(select(Feriado).where(Feriado.fecha == fecha).limit(1))
+    if feriado is not None and not feriado.devuelve:
+        raise CalculoHorasError("Este feriado no permite solicitar reintegro.")
+    tipo_dia = "FERIADO" if feriado is not None else "HABIL"
     if tipo_dia != "FERIADO":
         tipo_dia = "FRANCO"
     regla = obtener_regla_horas(usuario.convenio, tipo_dia, db)
