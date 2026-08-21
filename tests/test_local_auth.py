@@ -525,6 +525,7 @@ class ReintegroTests(unittest.TestCase):
                     (date(2026, 8, 21), "MERIENDA", Decimal("1.00")),
                 ],
             )
+            self.assertTrue(all(item.tipo_dia == "HABIL" for item in concepts))
             selected_hour = db.query(HoraExtra).filter(
                 HoraExtra.fecha == date(2026, 8, 20),
                 HoraExtra.tipo_registro == "HORAS",

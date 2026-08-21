@@ -14,7 +14,7 @@
     {% endif %}
     <div class="start-history">
       {% if not es_jefe %}
-      <article class="pending-card"><span class="pending-card-count">{{ cargas_pendientes }}</span><span><strong>cargas tuyas pendientes</strong><small>Solicitudes propias que todavía no fueron resueltas.</small></span></article>
+      <a class="pending-card pending-card-link" href="/horas?estado=PENDIENTE"><span class="pending-card-count">{{ cargas_pendientes }}</span><span><strong>cargas tuyas pendientes</strong><small>Solicitudes propias que todavía no fueron resueltas.</small></span><i class="bi bi-chevron-right"></i></a>
       {% endif %}
       {% if es_jefe or es_admin %}<a class="pending-card pending-card-link" href="/autorizaciones"><span class="pending-card-count">{{ autorizaciones_pendientes }}</span><span><strong>pendientes de autorizar</strong><small>{{ 'Solicitudes de todos los roles.' if es_admin else 'Solicitudes del rol ' ~ (rol_activo|capitalize) ~ '.' }}</small></span><i class="bi bi-chevron-right"></i></a>{% endif %}
       {% if not es_jefe %}<a class="ui-btn start-button" href="/horas"><i class="bi bi-clock-history"></i> Historial de cargas</a>{% endif %}

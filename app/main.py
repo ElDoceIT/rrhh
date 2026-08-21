@@ -269,6 +269,10 @@ def recalcular_conceptos_jornada_pendiente(
         (item.horas_totales or Decimal("0.00") for item in horas),
         start=Decimal("0.00"),
     )
+    tipo_dia_jornada = next(
+        (item.tipo_dia for item in horas if item.fecha == fecha_jornada),
+        horas[0].tipo_dia if horas else "HABIL",
+    )
     cantidades = {
         "MERIENDA": int(total // Decimal("2")),
         "COMIDA": int(total // Decimal("3")),
@@ -319,6 +323,7 @@ def recalcular_conceptos_jornada_pendiente(
         if not registros:
             db.add(registro)
         registro.cantidad = Decimal(cantidad).quantize(Decimal("0.01"))
+        registro.tipo_dia = tipo_dia_jornada
         registro.hora_inicio = None
         registro.hora_fin = None
         registro.horas_totales = None
@@ -619,7 +624,6 @@ def inicio(request: Request, db: Session = Depends(get_db)):
             .join(HoraExtra.usuario)
             .where(
                 HoraExtra.estado == "PENDIENTE",
-                Usuario.id != assignment.usuario_id,
                 Usuario.roles.any(
                     func.upper(UsuarioRol.rol) == assignment.rol.upper()
                 ),
@@ -817,7 +821,14 @@ def rrhh_horas_extras(
     periodo: str | None = None,
     db: Session = Depends(get_db),
 ):
-    require_rrhh_role(request)
+    asignacion = obtener_asignacion_activa(request, db)
+    es_rrhh = asignacion.rol.upper() == "RRHH"
+    vista_jefe = asignacion.perfil.upper() == "JEFE" and not es_rrhh
+    if not es_rrhh and not vista_jefe:
+        raise HTTPException(
+            status_code=403,
+            detail="Se requiere el rol RRHH o un perfil Jefe.",
+        )
     contrataciones = list(dict.fromkeys(contratacion or []))
     convenios = [item.upper() for item in dict.fromkeys(convenio or []) if item.upper() in CONVENIOS_DISPONIBLES]
     tipos = list(db.scalars(select(TipoContratacion).order_by(TipoContratacion.contratacion)))
@@ -828,13 +839,35 @@ def rrhh_horas_extras(
         select(HoraExtra)
         .join(HoraExtra.usuario)
         .options(selectinload(HoraExtra.usuario).selectinload(Usuario.tipo_contratacion))
-        .where(HoraExtra.estado.in_(("PENDIENTE", "APROBADA")))
-        .order_by(HoraExtra.fecha.desc(), Usuario.apellido, Usuario.nombre, HoraExtra.id)
+        .where(HoraExtra.estado.in_(("PENDIENTE", "APROBADA", "RECHAZADA")))
+        .order_by(Usuario.apellido, Usuario.nombre, HoraExtra.fecha.desc(), HoraExtra.id.desc())
     )
+    if vista_jefe:
+        consulta = consulta.where(
+            Usuario.roles.any(
+                func.upper(UsuarioRol.rol) == asignacion.rol.upper(),
+            )
+        )
     consulta = aplicar_filtros_rrhh(
         consulta, fecha_desde, fecha_hasta, contrataciones, convenios,
     )
     horas = list(db.scalars(consulta))
+    grupos_por_usuario: dict[int, dict] = {}
+    for hora in horas:
+        grupo = grupos_por_usuario.setdefault(hora.usuario_id, {
+            "usuario": hora.usuario,
+            "horas": [],
+            "pendientes": 0,
+            "autorizadas": 0,
+            "rechazadas": 0,
+        })
+        grupo["horas"].append(hora)
+        if hora.estado == "PENDIENTE":
+            grupo["pendientes"] += 1
+        elif hora.estado == "APROBADA":
+            grupo["autorizadas"] += 1
+        elif hora.estado == "RECHAZADA":
+            grupo["rechazadas"] += 1
     contexto = contexto_filtros_rrhh(
         db, fecha_desde, fecha_hasta, contrataciones, convenios,
         periodo_activo, periodos, tipos,
@@ -842,8 +875,12 @@ def rrhh_horas_extras(
     contexto.update({
         "active_page": "rrhh_horas",
         "horas": horas,
+        "grupos": list(grupos_por_usuario.values()),
         "pendientes": sum(item.estado == "PENDIENTE" for item in horas),
         "autorizadas": sum(item.estado == "APROBADA" for item in horas),
+        "rechazadas": sum(item.estado == "RECHAZADA" for item in horas),
+        "vista_jefe": vista_jefe,
+        "rol_activo": asignacion.rol,
     })
     return templates.TemplateResponse(request, "rrhh_horas.html", contexto)
 
@@ -2055,7 +2092,6 @@ def autorizaciones(
     condiciones = [HoraExtra.estado == "PENDIENTE"]
     if not es_admin:
         condiciones.extend([
-            Usuario.id != autorizador.id,
             Usuario.roles.any(func.upper(UsuarioRol.rol) == asignacion_activa.rol.upper()),
         ])
     pendientes = list(db.scalars(
