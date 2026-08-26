@@ -11,7 +11,7 @@
       {% if hora.tipo_registro == 'HORAS' %}
       <label class="field"><span>Hora de inicio *</span>{{ time_select('hora_inicio', hora.hora_inicio.strftime('%H:%M')) }}</label>
       <label class="field"><span>Hora de finalización *</span>{{ time_select('hora_fin', hora.hora_fin.strftime('%H:%M')) }}</label>
-      {% elif hora.tipo_registro == 'DIA_TRABAJADO' %}<label class="check-field franco-field"><input type="checkbox" name="marcar_como_franco" {% if hora.tipo_dia == 'FRANCO' %}checked{% endif %}><span><strong>Era mi franco</strong><small>No es necesario marcarlo si la fecha es feriado.</small></span></label>
+      {% elif hora.tipo_registro == 'DIA_TRABAJADO' %}<label class="field"><span>Hora de inicio *</span>{{ time_select('hora_inicio', hora.hora_inicio.strftime('%H:%M') if hora.hora_inicio else '') }}</label><label class="field"><span>Hora de finalización *</span>{{ time_select('hora_fin', hora.hora_fin.strftime('%H:%M') if hora.hora_fin else '') }}</label><div class="info-strip"><i class="bi bi-info-circle"></i><span>Si la fecha no es feriado, se considera automáticamente como franco.</span></div>
       {% else %}<div class="info-strip"><i class="bi bi-info-circle"></i><span>Este registro solicita únicamente el reintegro del día.</span></div>{% endif %}
       <label class="field request-observations"><span>Observaciones <b>*</b></span><textarea name="observaciones" rows="3" required>{{ hora.observaciones or '' }}</textarea></label>
       <div class="request-actions"><a class="ui-btn" href="/horas">Cancelar</a><button class="ui-btn primary-btn" type="submit"><i class="bi bi-check-lg"></i> Guardar cambios</button></div>

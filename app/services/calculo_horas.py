@@ -63,6 +63,8 @@ def calcular_resultado_dia_trabajado(
     fecha: date,
     db: Session,
     marcar_como_franco: bool = False,
+    hora_inicio: time | None = None,
+    hora_fin: time | None = None,
 ) -> ResultadoHorasExtra:
     usuario = db.get(Usuario, usuario_id)
     if usuario is None or not usuario.status:
@@ -77,18 +79,37 @@ def calcular_resultado_dia_trabajado(
                 "La fecha no es feriado. Indicá que corresponde a un franco."
             )
         tipo_dia = "FRANCO"
+    if (hora_inicio is None) != (hora_fin is None):
+        raise CalculoHorasError("Ingresá el horario completo de la jornada trabajada.")
+    horas_totales = None
+    horas_nocturnas = None
+    if hora_inicio is not None and hora_fin is not None:
+        tramos = dividir_carga_en_fechas(fecha, hora_inicio, hora_fin)
+        horas_totales = sum(
+            (calcular_horas_totales(inicio, fin) for _, inicio, fin in tramos),
+            start=Decimal("0.00"),
+        )
+        horas_nocturnas = Decimal("0.00")
+        for fecha_tramo, inicio, fin in tramos:
+            tipo_tramo = clasificar_tipo_dia(fecha_tramo, db)
+            if fecha_tramo == fecha and tipo_dia == "FRANCO":
+                tipo_tramo = "FRANCO"
+            regla = obtener_regla_horas(usuario.convenio, tipo_tramo, db)
+            horas_nocturnas += calcular_horas_nocturnas(
+                inicio, fin, regla.hora_nocturna_desde, regla.hora_nocturna_hasta,
+            )
     return ResultadoHorasExtra(
         usuario_id=usuario.id,
         usuario_nombre=f"{usuario.apellido}, {usuario.nombre}",
         legajo=usuario.legajo,
         convenio=usuario.convenio,
         fecha=fecha,
-        hora_inicio=None,
-        hora_fin=None,
+        hora_inicio=hora_inicio,
+        hora_fin=hora_fin,
         tipo_dia=tipo_dia,
         tipo_hora=None,
-        horas_totales=None,
-        horas_nocturnas=None,
+        horas_totales=horas_totales,
+        horas_nocturnas=horas_nocturnas,
         permite_reintegro=feriado.devuelve if feriado is not None else True,
         regla_id=None,
         tipo_registro="DIA_TRABAJADO",
@@ -208,7 +229,7 @@ def calcular_resultado_otra_carga(
     if not usuario.convenio:
         raise CalculoHorasError("El usuario no tiene un convenio asignado.")
     tipo_hora_normalizado = tipo_hora.strip().upper()
-    if tipo_hora_normalizado in {"COMIDA", "MERIENDA"}:
+    if tipo_hora_normalizado in {"COMIDA", "MERIENDA", "DOMINGO"}:
         raise CalculoHorasError("El tipo de carga seleccionado no está permitido.")
     if tipo_hora_normalizado == "EXTERIOR PRENSA" and cantidad not in {
         Decimal("3"), Decimal("6"),
@@ -238,7 +259,9 @@ def calcular_resultado_otra_carga(
         fecha=fecha,
         hora_inicio=None,
         hora_fin=None,
-        tipo_dia="TODOS",
+        # TODOS define qué regla habilita el concepto; el registro conserva
+        # la clasificación real de la fecha para respetar el esquema y los reportes.
+        tipo_dia=clasificar_tipo_dia(fecha, db),
         tipo_hora=regla.tipo_hora,
         horas_totales=None,
         horas_nocturnas=None,
@@ -246,6 +269,66 @@ def calcular_resultado_otra_carga(
         regla_id=regla.id,
         tipo_registro="OTRAS",
         cantidad=cantidad.quantize(DOS_DECIMALES, rounding=ROUND_HALF_UP),
+    )
+
+
+def calcular_resultado_domingo(
+    usuario_id: int,
+    fecha: date,
+    db: Session,
+    hora_inicio: time | None = None,
+    hora_fin: time | None = None,
+) -> ResultadoHorasExtra:
+    usuario = db.get(Usuario, usuario_id)
+    if usuario is None or not usuario.status:
+        raise CalculoHorasError("El usuario seleccionado no existe o está inactivo.")
+    if str(usuario.convenio or "").strip().upper() != "SAT" or fecha.weekday() != 6:
+        raise CalculoHorasError("La carga DOMINGO sólo corresponde a usuarios SAT en domingo.")
+    regla = db.scalar(
+        select(ReglaHora).where(
+            func.upper(ReglaHora.convenio) == "SAT",
+            func.upper(ReglaHora.tipo_dia) == "TODOS",
+            func.upper(ReglaHora.tipo_hora) == "DOMINGO",
+        ).order_by(ReglaHora.id).limit(1)
+    )
+    if regla is None:
+        raise CalculoHorasError("No existe la carga DOMINGO para el convenio SAT.")
+    tipo_dia = clasificar_tipo_dia(fecha, db)
+    horas_totales = None
+    horas_nocturnas = None
+    if (hora_inicio is None) != (hora_fin is None):
+        raise CalculoHorasError("Ingresá el horario completo de la jornada del domingo.")
+    if hora_inicio is not None and hora_fin is not None:
+        tramos = dividir_carga_en_fechas(fecha, hora_inicio, hora_fin)
+        horas_totales = sum(
+            (calcular_horas_totales(inicio, fin) for _, inicio, fin in tramos),
+            start=Decimal("0.00"),
+        )
+        horas_nocturnas = Decimal("0.00")
+        for fecha_tramo, inicio, fin in tramos:
+            regla_tramo = obtener_regla_horas(
+                usuario.convenio, clasificar_tipo_dia(fecha_tramo, db), db,
+            )
+            horas_nocturnas += calcular_horas_nocturnas(
+                inicio, fin,
+                regla_tramo.hora_nocturna_desde, regla_tramo.hora_nocturna_hasta,
+            )
+    return ResultadoHorasExtra(
+        usuario_id=usuario.id,
+        usuario_nombre=f"{usuario.apellido}, {usuario.nombre}",
+        legajo=usuario.legajo,
+        convenio=usuario.convenio,
+        fecha=fecha,
+        hora_inicio=hora_inicio,
+        hora_fin=hora_fin,
+        tipo_dia=tipo_dia,
+        tipo_hora=regla.tipo_hora,
+        horas_totales=horas_totales,
+        horas_nocturnas=horas_nocturnas,
+        permite_reintegro=False,
+        regla_id=regla.id,
+        tipo_registro="OTRAS",
+        cantidad=Decimal("1.00"),
     )
 
 

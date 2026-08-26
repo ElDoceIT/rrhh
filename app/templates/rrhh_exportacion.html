@@ -15,12 +15,12 @@
   <section class="card">
     <div class="section-heading section-heading-pill"><h2>Vista previa</h2><span class="count-chip">{{ filas|length }}</span></div>
     {% if filas %}<div class="table-wrap"><table class="ui-table">
-      <thead><tr><th>Legajo</th><th>Nombre y apellido</th><th>Tipo de hora</th><th>Cantidad de horas</th></tr></thead>
+      <thead><tr><th>Legajo</th><th>Nombre y apellido</th><th>Concepto</th><th>Cantidad</th></tr></thead>
       <tbody>{% for fila in filas %}<tr>
         <td data-label="Legajo">{{ fila.legajo or '—' }}</td>
         <td data-label="Nombre y apellido"><strong>{{ fila.nombre }} {{ fila.apellido }}</strong></td>
-        <td data-label="Tipo de hora"><span class="type-chip">{{ fila.tipo_hora }}</span></td>
-        <td data-label="Cantidad de horas"><strong>{{ '%.2f'|format(fila.cantidad) }}</strong></td>
+        <td data-label="Concepto"><span class="type-chip">{{ fila.tipo_hora }}</span></td>
+        <td data-label="Cantidad"><strong>{{ '%.2f'|format(fila.cantidad) }}</strong></td>
       </tr>{% endfor %}</tbody>
     </table></div>{% else %}<div class="empty-state"><i class="bi bi-file-earmark-spreadsheet"></i><strong>No hay datos autorizados para exportar</strong><span>Modificá el período o las opciones seleccionadas.</span></div>{% endif %}
   </section>

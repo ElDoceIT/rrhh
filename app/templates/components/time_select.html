@@ -10,6 +10,6 @@
     <option value="00" {% if current_value[3:5] == '00' %}selected{% endif %}>00</option>
     <option value="30" {% if current_value[3:5] == '30' %}selected{% endif %}>30</option>
   </select>
-  <input type="hidden" name="{{ name }}" value="{{ current_value }}" {% if kind == 'start' %}data-start-time{% elif kind == 'end' %}data-end-time{% endif %}>
+  <input type="hidden" name="{{ name }}" value="{{ current_value }}" {% if kind == 'start' %}data-start-time{% elif kind == 'end' %}data-end-time{% elif kind == 'journey-start' %}data-journey-start-time{% elif kind == 'journey-end' %}data-journey-end-time{% endif %}>
 </span>
 {%- endmacro %}
