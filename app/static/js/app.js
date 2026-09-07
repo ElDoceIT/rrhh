@@ -273,6 +273,13 @@ document.querySelectorAll(".request-form").forEach((form) => {
         control.disabled = !isWorkedDay;
       });
     });
+    form.querySelectorAll(".associated-loads-field").forEach((field) => {
+      const isAssociatedLoad = isHours || isWorkedDay;
+      field.classList.toggle("hidden", !isAssociatedLoad);
+      field.querySelectorAll("select, input, textarea, button").forEach((control) => {
+        control.disabled = !isAssociatedLoad;
+      });
+    });
     form.querySelectorAll(".extra-time-fields").forEach((fields) => {
       fields.classList.toggle("hidden", !showsExtraTime);
       fields.querySelectorAll("select, input, button").forEach((control) => {
@@ -436,11 +443,11 @@ document.querySelectorAll(".request-form").forEach((form) => {
   };
   const changeOtherQuantity = (delta) => {
     if (!otherQuantity) return;
-    const nextValue = Math.max(0.01, (Number(otherQuantity.value) || 1) + delta);
-    otherQuantity.value = String(Math.round(nextValue * 100) / 100);
+    const nextValue = Math.max(0.5, (Number(otherQuantity.value) || 1) + delta);
+    otherQuantity.value = String(Math.round(nextValue * 2) / 2);
   };
-  form.querySelector("[data-other-quantity-down]")?.addEventListener("click", () => changeOtherQuantity(-1));
-  form.querySelector("[data-other-quantity-up]")?.addEventListener("click", () => changeOtherQuantity(1));
+  form.querySelector("[data-other-quantity-down]")?.addEventListener("click", () => changeOtherQuantity(-0.5));
+  form.querySelector("[data-other-quantity-up]")?.addEventListener("click", () => changeOtherQuantity(0.5));
   form.querySelector("[data-include-extra]")?.addEventListener("change", updateRecordType);
   form.querySelector("[data-franco-check]")?.addEventListener("change", updateRecordType);
   primaryDate?.addEventListener("change", updateRecordType);

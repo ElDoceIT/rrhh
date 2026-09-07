@@ -26,8 +26,8 @@
         <thead><tr><th>Fecha</th><th>Registro</th><th>Tipo de hora</th><th>Cantidad</th><th>Estado</th><th>Observaciones</th><th>Observación de rechazo</th></tr></thead>
         <tbody>{% for hora in grupo.horas %}<tr>
           <td data-label="Fecha"><strong>{{ hora.fecha.strftime('%d/%m/%Y') }}</strong></td>
-          <td data-label="Registro">{{ 'Día trabajado' if hora.tipo_registro == 'DIA_TRABAJADO' else ('Reintegro' if hora.tipo_registro == 'REINTEGRO' else ('Domingo trabajado' if hora.tipo_registro == 'OTRAS' and hora.tipo_hora|upper == 'DOMINGO' else ('Otras cargas' if hora.tipo_registro == 'OTRAS' else 'Horas extras'))) }}</td>
-          <td data-label="Tipo de hora">{{ hora.tipo_hora or '—' }}</td>
+          <td data-label="Registro">{{ hora.concepto_excepcional_nombre if hora.tipo_registro == 'EXCEPCIONAL' else ('Día trabajado' if hora.tipo_registro == 'DIA_TRABAJADO' else ('Reintegro' if hora.tipo_registro == 'REINTEGRO' else ('Domingo trabajado' if hora.tipo_registro == 'OTRAS' and hora.tipo_hora|upper == 'DOMINGO' else ('Otras cargas' if hora.tipo_registro == 'OTRAS' else 'Horas extras')))) }}</td>
+          <td data-label="Tipo de hora">{{ hora.concepto_excepcional_nombre if hora.tipo_registro == 'EXCEPCIONAL' else (hora.tipo_hora or '—') }}</td>
           <td data-label="Cantidad">{% if hora.cantidad is not none %}{{ '%.2f'|format(hora.cantidad) }}{% elif hora.horas_totales is not none %}{{ '%.2f'|format(hora.horas_totales) }} h{% else %}—{% endif %}</td>
           <td data-label="Estado">{% if hora.estado == 'APROBADA' %}<span class="status-chip success-chip">Autorizada</span>{% elif hora.estado == 'RECHAZADA' %}<span class="status-chip error-chip">Rechazada</span>{% else %}<span class="status-chip info-chip">Pendiente</span>{% endif %}</td>
           <td data-label="Observaciones" class="observations">{{ hora.observaciones or '—' }}</td>

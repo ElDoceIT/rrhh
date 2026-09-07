@@ -1,6 +1,6 @@
-<section class="additional-concepts hours-only-field" data-additional-concepts>
+<section class="additional-concepts associated-loads-field" data-additional-concepts>
   <div class="additional-concepts-heading">
-    <div><strong>Otras cargas asociadas</strong><small>Opcional. Agregá conceptos correspondientes a las mismas fechas de las horas extras.</small></div>
+    <div><strong>Otras cargas asociadas</strong><small>Opcional. Agregá conceptos correspondientes a la misma fecha de esta carga.</small></div>
     <button class="ui-btn" type="button" data-add-concept><i class="bi bi-plus-lg"></i> Agregar concepto</button>
   </div>
   <div data-concept-rows></div>
@@ -9,6 +9,7 @@
       <label class="field"><span>Concepto *</span><select name="concepto_adicional_tipo" required>
         <option value="" selected disabled>Seleccionar</option>
         {% for convenio, tipo, descripcion in tipos_otras_cargas %}<option value="{{ tipo }}" data-convenio="{{ convenio }}" data-description="{{ descripcion or '' }}">{{ tipo }}</option>{% endfor %}
+        {% for concepto in conceptos_excepcionales %}<option value="EXCEPCIONAL:{{ concepto.id_concepto_excepcional }}" data-description="{{ concepto.descripcion or 'Concepto habilitado para vos.' }}">{{ concepto.nombre }}</option>{% endfor %}
       </select><small data-concept-description>Seleccioná un concepto para ver qué representa.</small></label>
       <label class="field"><span>Cantidad *</span><input type="number" name="concepto_adicional_cantidad" value="1" min="0.5" max="999999.5" step="0.5" required><select class="hidden" data-additional-exterior-quantity disabled required><option value="3">3</option><option value="6">6</option></select></label>
       <label class="field concept-justification"><span>Justificación de la cantidad *</span><textarea name="concepto_adicional_observacion" rows="2" required placeholder="Explicá por qué corresponde esta cantidad"></textarea></label>

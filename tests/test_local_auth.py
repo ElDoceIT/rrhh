@@ -10,7 +10,16 @@ from sqlalchemy.pool import StaticPool
 from starlette.requests import Request
 
 from app.database.connection import Base
-from app.database.models import Feriado, HoraExtra, ReglaHora, TipoContratacion, Usuario, UsuarioRol
+from app.database.models import (
+    ConceptoExcepcional,
+    Feriado,
+    HoraExtra,
+    ReglaHora,
+    TipoContratacion,
+    Usuario,
+    UsuarioConceptoExcepcional,
+    UsuarioRol,
+)
 from app.services.local_auth import (
     authenticate_local_user,
     is_local_username,
@@ -20,6 +29,7 @@ from app.services.local_auth import (
 from app.services.calculo_horas import (
     CalculoHorasError,
     calcular_horas_totales,
+    calcular_resultado_concepto_excepcional,
     calcular_resultado_dia_trabajado,
     calcular_resultado_domingo,
     calcular_resultado_horas_extra,
@@ -122,6 +132,48 @@ class LocalAuthTests(unittest.TestCase):
             limites_fecha_carga_usuario(monotributo, date(2026, 8, 21))[:2],
             (date(2026, 8, 1), date(2026, 8, 31)),
         )
+
+    def test_exceptional_concept_requires_valid_assignment_and_half_units(self):
+        with self.Session() as db:
+            user = Usuario(
+                nombre="Ana", apellido="Pérez", username="ana-excepcion",
+                hashed_password="x", origen="AD", convenio="SAT", status=True,
+            )
+            concept = ConceptoExcepcional(
+                nombre="Plus operativo", descripcion="Tarea especial", activo=True,
+            )
+            db.add_all([user, concept])
+            db.flush()
+
+            with self.assertRaisesRegex(CalculoHorasError, "No tenés habilitado"):
+                calcular_resultado_concepto_excepcional(
+                    user.id, date(2026, 8, 20), concept.id_concepto_excepcional,
+                    Decimal("1.00"), db,
+                )
+
+            db.add(UsuarioConceptoExcepcional(
+                usuario_id=user.id,
+                concepto_excepcional_id=concept.id_concepto_excepcional,
+                fecha_desde=date(2026, 8, 16),
+                fecha_hasta=date(2026, 9, 15),
+                activo=True,
+                observacion="Autorizado por RRHH",
+            ))
+            db.flush()
+
+            with self.assertRaisesRegex(CalculoHorasError, "de a 0,5"):
+                calcular_resultado_concepto_excepcional(
+                    user.id, date(2026, 8, 20), concept.id_concepto_excepcional,
+                    Decimal("1.20"), db,
+                )
+
+            result = calcular_resultado_concepto_excepcional(
+                user.id, date(2026, 8, 20), concept.id_concepto_excepcional,
+                Decimal("1.50"), db,
+            )
+            self.assertEqual(result.tipo_registro, "EXCEPCIONAL")
+            self.assertEqual(result.cantidad, Decimal("1.50"))
+            self.assertEqual(result.concepto_excepcional_nombre, "Plus operativo")
 
     def test_session_contains_all_assignments_and_selects_one(self):
         with self.Session() as db:

@@ -19,12 +19,13 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 
 from app.database.connection import SessionLocal, engine, get_db
-from app.database.models import Feriado, HoraExtra, ReglaHora, TipoContratacion, Usuario, UsuarioRol
+from app.database.models import ConceptoExcepcional, Feriado, HoraExtra, ReglaHora, TipoContratacion, Usuario, UsuarioConceptoExcepcional, UsuarioRol
 from app.services.ad_auth import ActiveDirectoryAuthError, authenticate_ad_user, list_ad_group_users
 from app.services.access_catalog import CONVENIOS_DISPONIBLES, PERFILES_DISPONIBLES, ROLES_DISPONIBLES
 from app.services.calculo_horas import (
     CalculoHorasError,
     calcular_horas_totales,
+    calcular_resultado_concepto_excepcional,
     calcular_resultado_dia_trabajado,
     calcular_resultado_domingo,
     calcular_resultado_horas_extra,
@@ -68,9 +69,12 @@ async def require_login(request: Request, call_next):
         active_role = str(session_user_data.get("role") or "").upper()
         users_path = path.startswith("/configuracion/usuarios")
         holidays_path = path.startswith("/configuracion/feriados")
+        exceptional_path = path.startswith("/configuracion/conceptos-excepcionales")
+        active_profile = str(session_user_data.get("profile") or "").upper()
         if path.startswith("/configuracion") and not (
             active_role == "ADMIN"
             or ((users_path or holidays_path) and active_role == "RRHH")
+            or (exceptional_path and (active_role == "RRHH" or active_profile == "JEFE"))
         ):
             return HTMLResponse("Acceso denegado: se requiere el rol ADMIN.", status_code=403)
         return await call_next(request)
@@ -182,6 +186,20 @@ def tipos_otras_cargas(db: Session) -> list[tuple[str, str, str]]:
         .distinct()
         .order_by(ReglaHora.convenio, ReglaHora.tipo_hora)
     ).tuples())
+
+
+def conceptos_excepcionales_habilitados(db: Session, usuario_id: int) -> list[ConceptoExcepcional]:
+    return list(db.scalars(
+        select(ConceptoExcepcional)
+        .join(UsuarioConceptoExcepcional)
+        .where(
+            UsuarioConceptoExcepcional.usuario_id == usuario_id,
+            UsuarioConceptoExcepcional.activo.is_(True),
+            ConceptoExcepcional.activo.is_(True),
+        )
+        .distinct()
+        .order_by(ConceptoExcepcional.nombre)
+    ))
 
 
 def fechas_feriados_sin_devolucion(db: Session) -> list[str]:
@@ -427,6 +445,8 @@ def encode_carga(
     marcar_como_franco: bool = False,
     tipo_hora: str | None = None,
     cantidad: Decimal | None = None,
+    concepto_excepcional_id: int | None = None,
+    concepto_excepcional_nombre: str | None = None,
 ) -> str:
     return "|".join((
         str(usuario_id),
@@ -438,22 +458,24 @@ def encode_carga(
         "SI" if marcar_como_franco else "NO",
         quote(clean_optional(tipo_hora) or "", safe=""),
         str(cantidad) if cantidad is not None else "",
+        str(concepto_excepcional_id) if concepto_excepcional_id is not None else "",
+        quote(clean_optional(concepto_excepcional_nombre) or "", safe=""),
     ))
 
 
-def decode_carga(value: str) -> tuple[int, date, time | None, time | None, str | None, str, bool, str | None, Decimal | None]:
+def decode_carga(value: str) -> tuple[int, date, time | None, time | None, str | None, str, bool, str | None, Decimal | None, int | None, str | None]:
     try:
-        partes = value.split("|", maxsplit=8)
+        partes = value.split("|", maxsplit=10)
         if len(partes) == 5:
             partes.append("HORAS")
         if len(partes) == 6:
             partes.append("NO")
-        while len(partes) < 9:
+        while len(partes) < 11:
             partes.append("")
-        usuario_id, fecha, hora_inicio, hora_fin, observaciones, tipo_registro, marcar_franco, tipo_hora, cantidad = partes
+        usuario_id, fecha, hora_inicio, hora_fin, observaciones, tipo_registro, marcar_franco, tipo_hora, cantidad, concepto_id, concepto_nombre = partes
         tipo_registro = tipo_registro.strip().upper()
         marcar_franco = marcar_franco.strip().upper()
-        if tipo_registro not in {"HORAS", "DIA_TRABAJADO", "REINTEGRO", "OTRAS"} or marcar_franco not in {"SI", "NO"}:
+        if tipo_registro not in {"HORAS", "DIA_TRABAJADO", "REINTEGRO", "OTRAS", "EXCEPCIONAL"} or marcar_franco not in {"SI", "NO"}:
             raise ValueError
         return (
             int(usuario_id),
@@ -465,13 +487,15 @@ def decode_carga(value: str) -> tuple[int, date, time | None, time | None, str |
             marcar_franco == "SI",
             clean_optional(unquote(tipo_hora)),
             Decimal(cantidad) if cantidad else None,
+            int(concepto_id) if concepto_id else None,
+            clean_optional(unquote(concepto_nombre)),
         )
     except (TypeError, ValueError) as error:
         raise CalculoHorasError("La solicitud contiene una carga con formato inválido.") from error
 
 
 def calcular_carga_codificada(datos, db: Session):
-    usuario_id, fecha, hora_inicio, hora_fin, _, tipo_registro, marcar_como_franco, tipo_hora, cantidad = datos
+    usuario_id, fecha, hora_inicio, hora_fin, _, tipo_registro, marcar_como_franco, tipo_hora, cantidad, concepto_id, concepto_nombre = datos
     if tipo_registro == "REINTEGRO":
         return calcular_resultado_reintegro(usuario_id, fecha, db)
     if tipo_registro == "DIA_TRABAJADO":
@@ -487,6 +511,13 @@ def calcular_carga_codificada(datos, db: Session):
                 usuario_id, fecha, db, hora_inicio=hora_inicio, hora_fin=hora_fin,
             )
         return calcular_resultado_otra_carga(usuario_id, fecha, tipo_hora, cantidad, db)
+    if tipo_registro == "EXCEPCIONAL":
+        if concepto_id is None or cantidad is None or concepto_nombre is None:
+            raise CalculoHorasError("El concepto excepcional está incompleto.")
+        return calcular_resultado_concepto_excepcional(
+            usuario_id, fecha, concepto_id, cantidad, db,
+            nombre_historico=concepto_nombre,
+        )
     if hora_inicio is None or hora_fin is None:
         raise CalculoHorasError("La carga de horas no contiene un horario válido.")
     return calcular_resultado_horas_extra(
@@ -747,6 +778,28 @@ def require_rrhh_role(request: Request) -> None:
         raise HTTPException(status_code=403, detail="Se requiere el rol RRHH.")
 
 
+def acceso_conceptos_excepcionales(
+    request: Request, db: Session,
+) -> tuple[UsuarioRol, bool]:
+    asignacion = obtener_asignacion_activa(request, db)
+    administra_catalogo = asignacion.rol.upper() in {"ADMIN", "RRHH"}
+    if not administra_catalogo and asignacion.perfil.upper() != "JEFE":
+        raise HTTPException(status_code=403, detail="No tenés permiso para administrar excepciones.")
+    return asignacion, administra_catalogo
+
+
+def usuarios_asignables_excepciones(
+    asignacion: UsuarioRol, administra_catalogo: bool, db: Session,
+) -> list[Usuario]:
+    consulta = select(Usuario).where(Usuario.status.is_(True))
+    if not administra_catalogo:
+        consulta = consulta.where(Usuario.roles.any(and_(
+            func.upper(UsuarioRol.rol) == asignacion.rol.upper(),
+            func.upper(UsuarioRol.perfil) == "USUARIO",
+        )))
+    return list(db.scalars(consulta.order_by(Usuario.apellido, Usuario.nombre)))
+
+
 def periodos_rapidos_rrhh(fecha_consulta: date) -> dict[str, tuple[date, date]]:
     if fecha_consulta.day >= 16:
         nomina_desde = fecha_consulta.replace(day=16)
@@ -967,6 +1020,8 @@ def conceptos_exportables_hora(hora: HoraExtra) -> list[tuple[str, Decimal]]:
         conceptos.append((hora.tipo_hora, hora.horas_totales))
     elif tipo_registro == "OTRAS" and hora.tipo_hora and hora.cantidad:
         conceptos.append((hora.tipo_hora, hora.cantidad))
+    elif tipo_registro == "EXCEPCIONAL" and hora.concepto_excepcional_nombre and hora.cantidad:
+        conceptos.append((hora.concepto_excepcional_nombre, hora.cantidad))
     elif tipo_registro == "DIA_TRABAJADO":
         concepto = "FERIADO TRABAJADO" if tipo_dia == "FERIADO" else "FRANCO TRABAJADO"
         conceptos.append((concepto, Decimal("1.00")))
@@ -1202,6 +1257,7 @@ def nueva_solicitud(
         "fecha_minima": fecha_minima.isoformat() if fecha_minima else "",
         "fecha_maxima": fecha_maxima.isoformat() if fecha_maxima else "",
         "tipos_otras_cargas": tipos_otras_cargas(db),
+        "conceptos_excepcionales": conceptos_excepcionales_habilitados(db, usuarios[0].id) if usuarios else [],
         "feriados": fechas_feriados(db),
         "feriados_sin_devolucion": fechas_feriados_sin_devolucion(db),
         "error": error,
@@ -1271,39 +1327,72 @@ def procesar_solicitud(
             observaciones_resultados.append(datos[4])
         tipo_registro = tipo_registro.strip().upper()
         nuevos_items = []
+        tipos_adicionales = list(concepto_adicional_tipo or [])
+        cantidades_adicionales = list(concepto_adicional_cantidad or [])
+        observaciones_adicionales = list(concepto_adicional_observacion or [])
+        if not (
+            len(tipos_adicionales)
+            == len(cantidades_adicionales)
+            == len(observaciones_adicionales)
+        ):
+            raise CalculoHorasError("Los conceptos adicionales están incompletos.")
+        adicionales = []
+        for tipo, cantidad_adicional, observacion_adicional in zip(
+            tipos_adicionales, cantidades_adicionales, observaciones_adicionales,
+        ):
+            if cantidad_adicional <= 0 or cantidad_adicional % Decimal("0.5") != 0:
+                raise CalculoHorasError(
+                    f"La cantidad de {tipo} debe ingresarse de a 0,5."
+                )
+            observacion_concepto = clean_optional(observacion_adicional)
+            if observacion_concepto is None:
+                raise CalculoHorasError(
+                    f"Justificá la cantidad indicada para {tipo}."
+                )
+            adicionales.append((tipo, cantidad_adicional, observacion_concepto))
+
+        def agregar_conceptos_adicionales(fecha_concepto: date) -> None:
+            for tipo, cantidad_adicional, observacion_concepto in adicionales:
+                if tipo.startswith("EXCEPCIONAL:"):
+                    try:
+                        concepto_id = int(tipo.split(":", 1)[1])
+                    except ValueError as error_conversion:
+                        raise CalculoHorasError("El concepto excepcional seleccionado no es válido.") from error_conversion
+                    concepto = calcular_resultado_concepto_excepcional(
+                        usuario_id, fecha_concepto, concepto_id,
+                        cantidad_adicional, db,
+                    )
+                    tipo_item = "EXCEPCIONAL"
+                else:
+                    concepto = calcular_resultado_otra_carga(
+                        usuario_id, fecha_concepto, tipo, cantidad_adicional, db,
+                    )
+                    tipo_item = "OTRAS"
+                nuevos_items.append((
+                    concepto, fecha_concepto, None, None, tipo_item, False,
+                    observacion_concepto,
+                ))
+
         if tipo_registro == "OTRAS":
             if not tipo_otra_carga or cantidad is None:
                 raise CalculoHorasError("Seleccioná un tipo de carga e ingresá la cantidad.")
-            resultado = calcular_resultado_otra_carga(
-                usuario_id, fecha_principal, tipo_otra_carga, cantidad, db,
-            )
-            nuevos_items.append((resultado, fecha_principal, None, None, "OTRAS", False))
+            if tipo_otra_carga.startswith("EXCEPCIONAL:"):
+                try:
+                    concepto_id = int(tipo_otra_carga.split(":", 1)[1])
+                except ValueError as error_conversion:
+                    raise CalculoHorasError("El concepto excepcional seleccionado no es válido.") from error_conversion
+                resultado = calcular_resultado_concepto_excepcional(
+                    usuario_id, fecha_principal, concepto_id, cantidad, db,
+                )
+                nuevos_items.append((resultado, fecha_principal, None, None, "EXCEPCIONAL", False))
+            else:
+                resultado = calcular_resultado_otra_carga(
+                    usuario_id, fecha_principal, tipo_otra_carga, cantidad, db,
+                )
+                nuevos_items.append((resultado, fecha_principal, None, None, "OTRAS", False))
         elif tipo_registro == "HORAS":
             if hora_inicio is None or hora_fin is None:
                 raise CalculoHorasError("Ingresá la hora de inicio y finalización.")
-            tipos_adicionales = list(concepto_adicional_tipo or [])
-            cantidades_adicionales = list(concepto_adicional_cantidad or [])
-            observaciones_adicionales = list(concepto_adicional_observacion or [])
-            if not (
-                len(tipos_adicionales)
-                == len(cantidades_adicionales)
-                == len(observaciones_adicionales)
-            ):
-                raise CalculoHorasError("Los conceptos adicionales están incompletos.")
-            adicionales = []
-            for tipo, cantidad_adicional, observacion_adicional in zip(
-                tipos_adicionales, cantidades_adicionales, observaciones_adicionales,
-            ):
-                if cantidad_adicional <= 0 or cantidad_adicional % Decimal("0.5") != 0:
-                    raise CalculoHorasError(
-                        f"La cantidad de {tipo} debe ingresarse de a 0,5."
-                    )
-                observacion_concepto = clean_optional(observacion_adicional)
-                if observacion_concepto is None:
-                    raise CalculoHorasError(
-                        f"Justificá la cantidad indicada para {tipo}."
-                    )
-                adicionales.append((tipo, cantidad_adicional, observacion_concepto))
             for fecha_seleccionada in fechas:
                 domingo_sat = es_domingo_sat(usuario_carga, fecha_seleccionada)
                 if domingo_sat and not existe_domingo_activo_o_en_borrador(
@@ -1330,14 +1419,7 @@ def procesar_solicitud(
                     nuevos_items.append((
                         resultado, fecha_tramo, inicio_tramo, fin_tramo, "HORAS", False,
                     ))
-                for tipo, cantidad_adicional, observacion_concepto in adicionales:
-                    concepto = calcular_resultado_otra_carga(
-                        usuario_id, fecha_seleccionada, tipo, cantidad_adicional, db,
-                    )
-                    nuevos_items.append((
-                        concepto, fecha_seleccionada, None, None, "OTRAS", False,
-                        observacion_concepto,
-                    ))
+                agregar_conceptos_adicionales(fecha_seleccionada)
         elif tipo_registro == "DIA_TRABAJADO":
             if jornada_hora_inicio is None or jornada_hora_fin is None:
                 raise CalculoHorasError("Ingresá la hora de inicio y finalización de la jornada.")
@@ -1463,6 +1545,7 @@ def procesar_solicitud(
                 nuevos_items.append((
                     reintegro, fecha_principal, None, None, "REINTEGRO", es_franco,
                 ))
+            agregar_conceptos_adicionales(fecha_principal)
         else:
             raise CalculoHorasError("El tipo de registro seleccionado no es válido.")
 
@@ -1480,7 +1563,9 @@ def procesar_solicitud(
                 tipo_item,
                 marcar_como_franco=es_franco_item,
                 tipo_hora=resultado.tipo_hora if tipo_item == "OTRAS" else None,
-                cantidad=resultado.cantidad if tipo_item == "OTRAS" else None,
+                cantidad=resultado.cantidad if tipo_item in {"OTRAS", "EXCEPCIONAL"} else None,
+                concepto_excepcional_id=resultado.concepto_excepcional_id,
+                concepto_excepcional_nombre=resultado.concepto_excepcional_nombre,
             )
             for item in nuevos_items
             for resultado, fecha_tramo, inicio_tramo, fin_tramo, tipo_item, es_franco_item in [item[:6]]
@@ -1510,6 +1595,7 @@ def procesar_solicitud(
             "fecha_minima": fecha_minima.isoformat() if fecha_minima else "",
             "fecha_maxima": fecha_maxima.isoformat() if fecha_maxima else "",
             "tipos_otras_cargas": tipos_otras_cargas(db),
+            "conceptos_excepcionales": conceptos_excepcionales_habilitados(db, usuarios[0].id) if usuarios else [],
             "feriados": fechas_feriados(db),
             "feriados_sin_devolucion": fechas_feriados_sin_devolucion(db),
             "total_horas": sum((item.horas_totales or Decimal("0.00") for item in resultados), start=Decimal("0.00")),
@@ -1610,6 +1696,8 @@ def confirmar_solicitud(
                 hora_fin=resultado.hora_fin,
                 horas_totales=resultado.horas_totales,
                 cantidad=resultado.cantidad,
+                concepto_excepcional_id=resultado.concepto_excepcional_id,
+                concepto_excepcional_nombre=resultado.concepto_excepcional_nombre,
                 tipo_dia=resultado.tipo_dia,
                 tipo_hora=resultado.tipo_hora,
                 horas_nocturnas=resultado.horas_nocturnas,
@@ -1643,6 +1731,206 @@ def confirmar_solicitud(
         mensaje = str(error) if isinstance(error, CalculoHorasError) else "No se pudo guardar la solicitud en la base de datos."
         raise HTTPException(status_code=422, detail=mensaje) from error
     return RedirectResponse(f"/horas?guardado={len(cargas)}", status_code=303)
+
+
+@app.get("/configuracion/conceptos-excepcionales", response_class=HTMLResponse)
+def administrar_conceptos_excepcionales(
+    request: Request,
+    guardado: str | None = None,
+    error: str | None = None,
+    db: Session = Depends(get_db),
+):
+    asignacion, administra_catalogo = acceso_conceptos_excepcionales(request, db)
+    usuarios = usuarios_asignables_excepciones(asignacion, administra_catalogo, db)
+    ids_usuarios = {usuario.id for usuario in usuarios}
+    conceptos = list(db.scalars(
+        select(ConceptoExcepcional).order_by(
+            ConceptoExcepcional.activo.desc(), ConceptoExcepcional.nombre,
+        )
+    ))
+    consulta_asignaciones = (
+        select(UsuarioConceptoExcepcional)
+        .options(
+            selectinload(UsuarioConceptoExcepcional.usuario),
+            selectinload(UsuarioConceptoExcepcional.concepto),
+            selectinload(UsuarioConceptoExcepcional.asignador),
+        )
+        .order_by(
+            UsuarioConceptoExcepcional.activo.desc(),
+            UsuarioConceptoExcepcional.fecha_asignacion.desc(),
+        )
+    )
+    if not administra_catalogo:
+        consulta_asignaciones = consulta_asignaciones.where(
+            UsuarioConceptoExcepcional.usuario_id.in_(ids_usuarios or {-1})
+        )
+    asignaciones = list(db.scalars(consulta_asignaciones))
+    por_usuario: dict[int, dict] = {}
+    por_concepto: dict[int, dict] = {}
+    for item in asignaciones:
+        grupo_usuario = por_usuario.setdefault(
+            item.usuario_id, {"entidad": item.usuario, "asignaciones": []},
+        )
+        grupo_usuario["asignaciones"].append(item)
+        grupo_concepto = por_concepto.setdefault(
+            item.concepto_excepcional_id,
+            {"entidad": item.concepto, "asignaciones": []},
+        )
+        grupo_concepto["asignaciones"].append(item)
+    asignaciones_por_usuario = sorted(
+        por_usuario.values(),
+        key=lambda grupo: (
+            grupo["entidad"].apellido.lower(), grupo["entidad"].nombre.lower(),
+        ),
+    )
+    asignaciones_por_concepto = sorted(
+        por_concepto.values(), key=lambda grupo: grupo["entidad"].nombre.lower(),
+    )
+    return templates.TemplateResponse(request, "conceptos_excepcionales.html", {
+        "active_page": "conceptos_excepcionales",
+        "conceptos": conceptos,
+        "conceptos_activos": [item for item in conceptos if item.activo],
+        "usuarios": usuarios,
+        "asignaciones": asignaciones,
+        "asignaciones_por_usuario": asignaciones_por_usuario,
+        "asignaciones_por_concepto": asignaciones_por_concepto,
+        "administra_catalogo": administra_catalogo,
+        "guardado": guardado,
+        "error": error,
+        "fecha_hoy": date.today().isoformat(),
+    })
+
+
+@app.post("/configuracion/conceptos-excepcionales")
+def crear_concepto_excepcional(
+    request: Request,
+    nombre: Annotated[str, Form()],
+    descripcion: Annotated[str | None, Form()] = None,
+    db: Session = Depends(get_db),
+):
+    _, administra_catalogo = acceso_conceptos_excepcionales(request, db)
+    if not administra_catalogo:
+        raise HTTPException(status_code=403, detail="Sólo RRHH o ADMIN pueden crear conceptos.")
+    nombre = nombre.strip()
+    if not nombre:
+        return RedirectResponse("/configuracion/conceptos-excepcionales?error=Ingresá+un+nombre", status_code=303)
+    db.add(ConceptoExcepcional(
+        nombre=nombre,
+        descripcion=clean_optional(descripcion),
+        activo=True,
+        requiere_observacion=True,
+        creado_por=(request.session.get("user") or {}).get("id"),
+    ))
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return RedirectResponse("/configuracion/conceptos-excepcionales?error=Ya+existe+un+concepto+con+ese+nombre", status_code=303)
+    return RedirectResponse("/configuracion/conceptos-excepcionales?guardado=concepto+creado", status_code=303)
+
+
+@app.post("/configuracion/conceptos-excepcionales/{concepto_id:int}")
+def actualizar_concepto_excepcional(
+    concepto_id: int,
+    request: Request,
+    nombre: Annotated[str, Form()],
+    descripcion: Annotated[str | None, Form()] = None,
+    activo: Annotated[str | None, Form()] = None,
+    db: Session = Depends(get_db),
+):
+    _, administra_catalogo = acceso_conceptos_excepcionales(request, db)
+    if not administra_catalogo:
+        raise HTTPException(status_code=403, detail="Sólo RRHH o ADMIN pueden modificar conceptos.")
+    concepto = db.get(ConceptoExcepcional, concepto_id)
+    if concepto is None:
+        raise HTTPException(status_code=404, detail="El concepto no existe.")
+    concepto.nombre = nombre.strip()
+    concepto.descripcion = clean_optional(descripcion)
+    concepto.activo = activo == "on"
+    if not concepto.nombre:
+        raise HTTPException(status_code=422, detail="El nombre es obligatorio.")
+    try:
+        db.commit()
+    except IntegrityError as error_db:
+        db.rollback()
+        raise HTTPException(status_code=422, detail="Ya existe un concepto con ese nombre.") from error_db
+    return RedirectResponse("/configuracion/conceptos-excepcionales?guardado=concepto+actualizado", status_code=303)
+
+
+@app.post("/configuracion/conceptos-excepcionales/asignaciones")
+def asignar_concepto_excepcional(
+    request: Request,
+    usuario_id: Annotated[int, Form()],
+    concepto_excepcional_id: Annotated[int, Form()],
+    fecha_desde: Annotated[date, Form()],
+    observacion: Annotated[str, Form()],
+    fecha_hasta: Annotated[date | None, Form()] = None,
+    db: Session = Depends(get_db),
+):
+    asignacion_activa, administra_catalogo = acceso_conceptos_excepcionales(request, db)
+    usuarios_permitidos = {
+        item.id for item in usuarios_asignables_excepciones(
+            asignacion_activa, administra_catalogo, db,
+        )
+    }
+    if usuario_id not in usuarios_permitidos:
+        raise HTTPException(status_code=403, detail="No podés asignar excepciones a ese usuario.")
+    concepto = db.get(ConceptoExcepcional, concepto_excepcional_id)
+    if concepto is None or not concepto.activo:
+        raise HTTPException(status_code=422, detail="El concepto no existe o está inactivo.")
+    observacion = observacion.strip()
+    if not observacion:
+        raise HTTPException(status_code=422, detail="La observación administrativa es obligatoria.")
+    if fecha_hasta is not None and fecha_hasta < fecha_desde:
+        raise HTTPException(status_code=422, detail="La fecha hasta no puede ser anterior a la fecha desde.")
+    consulta_solapada = select(UsuarioConceptoExcepcional.id_asignacion).where(
+        UsuarioConceptoExcepcional.usuario_id == usuario_id,
+        UsuarioConceptoExcepcional.concepto_excepcional_id == concepto_excepcional_id,
+        UsuarioConceptoExcepcional.activo.is_(True),
+        (UsuarioConceptoExcepcional.fecha_hasta.is_(None) | (UsuarioConceptoExcepcional.fecha_hasta >= fecha_desde)),
+    )
+    if fecha_hasta is not None:
+        consulta_solapada = consulta_solapada.where(
+            UsuarioConceptoExcepcional.fecha_desde <= fecha_hasta,
+        )
+    solapada = db.scalar(consulta_solapada.limit(1))
+    if solapada is not None:
+        raise HTTPException(status_code=422, detail="El usuario ya tiene una asignación vigente que se superpone.")
+    db.add(UsuarioConceptoExcepcional(
+        usuario_id=usuario_id,
+        concepto_excepcional_id=concepto_excepcional_id,
+        fecha_desde=fecha_desde,
+        fecha_hasta=fecha_hasta,
+        activo=True,
+        observacion=observacion,
+        asignado_por=(request.session.get("user") or {}).get("id"),
+    ))
+    db.commit()
+    return RedirectResponse("/configuracion/conceptos-excepcionales?guardado=asignación+creada", status_code=303)
+
+
+@app.post("/configuracion/conceptos-excepcionales/asignaciones/{asignacion_id}/desactivar")
+def desactivar_asignacion_excepcional(
+    asignacion_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    asignacion_activa, administra_catalogo = acceso_conceptos_excepcionales(request, db)
+    registro = db.get(UsuarioConceptoExcepcional, asignacion_id)
+    if registro is None:
+        raise HTTPException(status_code=404, detail="La asignación no existe.")
+    permitidos = {
+        item.id for item in usuarios_asignables_excepciones(
+            asignacion_activa, administra_catalogo, db,
+        )
+    }
+    if registro.usuario_id not in permitidos:
+        raise HTTPException(status_code=403, detail="No podés modificar esa asignación.")
+    registro.activo = False
+    if registro.fecha_hasta is None or registro.fecha_hasta > date.today():
+        registro.fecha_hasta = date.today()
+    db.commit()
+    return RedirectResponse("/configuracion/conceptos-excepcionales?guardado=asignación+desactivada", status_code=303)
 
 
 @app.get("/configuracion/parametros", response_class=HTMLResponse)

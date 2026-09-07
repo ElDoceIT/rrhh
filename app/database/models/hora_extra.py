@@ -13,6 +13,7 @@ from sqlalchemy import (
     Time,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.dialects.mysql import INTEGER
 
 from app.database.connection import Base
 
@@ -58,6 +59,17 @@ class HoraExtra(Base):
     cantidad: Mapped[Decimal | None] = mapped_column(
         Numeric(8, 2),
         nullable=True,
+    )
+
+    concepto_excepcional_id: Mapped[int | None] = mapped_column(
+        INTEGER(unsigned=True),
+        ForeignKey("conceptos_excepcionales.id_concepto_excepcional"),
+        nullable=True,
+        index=True,
+    )
+
+    concepto_excepcional_nombre: Mapped[str | None] = mapped_column(
+        String(100), nullable=True,
     )
 
     tipo_dia: Mapped[str] = mapped_column(

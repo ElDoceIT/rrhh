@@ -8,6 +8,8 @@ from sqlalchemy.orm import Session
 from app.database.models.feriado import Feriado
 from app.database.models.regla_hora import ReglaHora
 from app.database.models.usuario import Usuario
+from app.database.models.concepto_excepcional import ConceptoExcepcional
+from app.database.models.usuario_concepto_excepcional import UsuarioConceptoExcepcional
 
 
 DOS_DECIMALES = Decimal("0.01")
@@ -36,6 +38,8 @@ class ResultadoHorasExtra:
     regla_id: int | None
     tipo_registro: str = "HORAS"
     cantidad: Decimal | None = None
+    concepto_excepcional_id: int | None = None
+    concepto_excepcional_nombre: str | None = None
 
 
 def _hora_a_minutos(valor: time) -> int:
@@ -235,8 +239,8 @@ def calcular_resultado_otra_carga(
         Decimal("3"), Decimal("6"),
     }:
         raise CalculoHorasError("EXTERIOR PRENSA sólo admite una cantidad de 3 o 6.")
-    if cantidad <= 0:
-        raise CalculoHorasError("La cantidad debe ser mayor que cero.")
+    if cantidad <= 0 or cantidad % Decimal("0.5") != 0:
+        raise CalculoHorasError("La cantidad debe ingresarse de a 0,5.")
     regla = db.scalar(
         select(ReglaHora)
         .where(
@@ -269,6 +273,62 @@ def calcular_resultado_otra_carga(
         regla_id=regla.id,
         tipo_registro="OTRAS",
         cantidad=cantidad.quantize(DOS_DECIMALES, rounding=ROUND_HALF_UP),
+    )
+
+
+def calcular_resultado_concepto_excepcional(
+    usuario_id: int,
+    fecha: date,
+    concepto_id: int,
+    cantidad: Decimal,
+    db: Session,
+    nombre_historico: str | None = None,
+) -> ResultadoHorasExtra:
+    usuario = db.get(Usuario, usuario_id)
+    if usuario is None or not usuario.status:
+        raise CalculoHorasError("El usuario seleccionado no existe o está inactivo.")
+    concepto = db.get(ConceptoExcepcional, concepto_id)
+    if concepto is None or not concepto.activo:
+        raise CalculoHorasError("El concepto excepcional no existe o está inactivo.")
+    asignacion = db.scalar(
+        select(UsuarioConceptoExcepcional).where(
+            UsuarioConceptoExcepcional.usuario_id == usuario_id,
+            UsuarioConceptoExcepcional.concepto_excepcional_id == concepto_id,
+            UsuarioConceptoExcepcional.activo.is_(True),
+            UsuarioConceptoExcepcional.fecha_desde <= fecha,
+            (
+                UsuarioConceptoExcepcional.fecha_hasta.is_(None)
+                | (UsuarioConceptoExcepcional.fecha_hasta >= fecha)
+            ),
+        ).order_by(UsuarioConceptoExcepcional.fecha_desde.desc()).limit(1)
+    )
+    if asignacion is None:
+        raise CalculoHorasError(
+            f"No tenés habilitado el concepto {concepto.nombre} para esa fecha."
+        )
+    if cantidad <= 0 or cantidad % Decimal("0.5") != 0:
+        raise CalculoHorasError(
+            "La cantidad del concepto excepcional debe ingresarse de a 0,5."
+        )
+    nombre = (nombre_historico or concepto.nombre).strip()
+    return ResultadoHorasExtra(
+        usuario_id=usuario.id,
+        usuario_nombre=f"{usuario.apellido}, {usuario.nombre}",
+        legajo=usuario.legajo,
+        convenio=usuario.convenio or "",
+        fecha=fecha,
+        hora_inicio=None,
+        hora_fin=None,
+        tipo_dia=clasificar_tipo_dia(fecha, db),
+        tipo_hora=None,
+        horas_totales=None,
+        horas_nocturnas=None,
+        permite_reintegro=False,
+        regla_id=None,
+        tipo_registro="EXCEPCIONAL",
+        cantidad=cantidad.quantize(DOS_DECIMALES, rounding=ROUND_HALF_UP),
+        concepto_excepcional_id=concepto.id_concepto_excepcional,
+        concepto_excepcional_nombre=nombre,
     )
 
 

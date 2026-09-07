@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}Conceptos excepcionales{% endblock %}
+{% block content %}
+{% macro tabla_asignaciones(items, ocultar='') %}
+<div class="table-wrap"><table class="ui-table">
+  <thead><tr>{% if ocultar != 'persona' %}<th>Persona</th>{% endif %}{% if ocultar != 'concepto' %}<th>Concepto</th>{% endif %}<th>Vigencia</th><th>Motivo</th><th>Asignado por</th><th>Estado</th><th class="actions-column">Acciones</th></tr></thead>
+  <tbody>{% for item in items %}<tr>
+    {% if ocultar != 'persona' %}<td data-label="Persona"><strong>{{ item.usuario.apellido }}, {{ item.usuario.nombre }}</strong><br><span class="muted">{{ item.usuario.legajo }}</span></td>{% endif %}
+    {% if ocultar != 'concepto' %}<td data-label="Concepto"><span class="type-chip">{{ item.concepto.nombre }}</span></td>{% endif %}
+    <td data-label="Vigencia">{{ item.fecha_desde.strftime('%d/%m/%Y') }} a {{ item.fecha_hasta.strftime('%d/%m/%Y') if item.fecha_hasta else 'sin vencimiento' }}</td>
+    <td data-label="Motivo" class="observations">{{ item.observacion or '—' }}</td>
+    <td data-label="Asignado por">{{ (item.asignador.nombre ~ ' ' ~ item.asignador.apellido) if item.asignador else '—' }}</td>
+    <td data-label="Estado">{% if item.activo %}<span class="status-chip success-chip">Activa</span>{% else %}<span class="status-chip neutral-chip">Inactiva</span>{% endif %}</td>
+    <td data-label="Acciones" class="actions-column">{% if item.activo %}<form method="post" action="/configuracion/conceptos-excepcionales/asignaciones/{{ item.id_asignacion }}/desactivar" class="inline-form" onsubmit="return confirm('¿Desactivar esta asignación?');"><button class="ui-btn danger-btn" type="submit"><i class="bi bi-x-circle"></i> Desactivar</button></form>{% else %}—{% endif %}</td>
+  </tr>{% endfor %}</tbody>
+</table></div>
+{% endmacro %}
+<div class="container">
+  <nav class="breadcrumb" aria-label="Migas de pan"><a href="/">Inicio</a><i class="bi bi-chevron-right"></i><span>Configuración</span><i class="bi bi-chevron-right"></i><strong>Conceptos excepcionales</strong></nav>
+  <header class="page-header"><div><span class="eyebrow">Configuración</span><h1>Conceptos excepcionales</h1><p>Definí qué conceptos especiales puede cargar cada persona y durante qué período.</p></div></header>
+
+  {% if guardado %}<div class="alert success"><i class="bi bi-check-circle-fill"></i> Cambio guardado correctamente.</div>{% endif %}
+  {% if error %}<div class="alert error"><i class="bi bi-exclamation-triangle-fill"></i> {{ error }}</div>{% endif %}
+
+  {% if administra_catalogo %}
+  <section class="card form-card">
+    <div class="section-heading section-heading-pill"><div><span class="section-kicker">Catálogo</span><h2>Nuevo concepto</h2></div><span class="count-chip">{{ conceptos|length }}</span></div>
+    <form method="post" action="/configuracion/conceptos-excepcionales" class="rule-form">
+      <label class="field"><span>Nombre *</span><input name="nombre" maxlength="100" required placeholder="Ej.: Plus operativo"></label>
+      <label class="field field-wide"><span>Descripción</span><textarea name="descripcion" rows="3" placeholder="Explicá qué representa y cuándo corresponde cargarlo"></textarea></label>
+      <div class="form-actions"><button class="ui-btn primary-btn" type="submit"><i class="bi bi-plus-lg"></i> Crear concepto</button></div>
+    </form>
+  </section>
+
+  <section class="card">
+    <div class="section-heading section-heading-pill"><div><span class="section-kicker">Catálogo</span><h2>Conceptos configurados</h2></div><span class="count-chip">{{ conceptos|length }}</span></div>
+    {% if conceptos %}<div class="table-wrap"><table class="ui-table">
+      <thead><tr><th>Nombre y descripción</th><th>Estado</th><th>Editar</th></tr></thead>
+      <tbody>{% for concepto in conceptos %}<tr>
+        <td data-label="Concepto"><strong>{{ concepto.nombre }}</strong><br><span class="muted">{{ concepto.descripcion or 'Sin descripción' }}</span></td>
+        <td data-label="Estado">{% if concepto.activo %}<span class="status-chip success-chip">Activo</span>{% else %}<span class="status-chip neutral-chip">Inactivo</span>{% endif %}</td>
+        <td data-label="Editar">
+          <form method="post" action="/configuracion/conceptos-excepcionales/{{ concepto.id_concepto_excepcional }}" class="rule-form">
+            <label class="field"><span>Nombre *</span><input name="nombre" maxlength="100" required value="{{ concepto.nombre }}"></label>
+            <label class="field"><span>Descripción</span><input name="descripcion" value="{{ concepto.descripcion or '' }}"></label>
+            <label class="check-field"><input type="checkbox" name="activo" {% if concepto.activo %}checked{% endif %}><span><strong>Activo</strong><small>Disponible para nuevas cargas.</small></span></label>
+            <div class="form-actions"><button class="ui-btn" type="submit"><i class="bi bi-check-lg"></i> Guardar</button></div>
+          </form>
+        </td>
+      </tr>{% endfor %}</tbody>
+    </table></div>{% else %}<div class="empty-state"><i class="bi bi-stars"></i><strong>No hay conceptos configurados</strong><span>Creá el primero para poder asignarlo.</span></div>{% endif %}
+  </section>
+  {% endif %}
+
+  <section class="card form-card">
+    <div class="section-heading section-heading-pill"><div><span class="section-kicker">Permisos individuales</span><h2>Nueva asignación</h2></div><span class="count-chip">{{ asignaciones|length }}</span></div>
+    <p class="muted">La persona sólo podrá cargar el concepto en fechas comprendidas dentro del período indicado.</p>
+    {% if usuarios and conceptos_activos %}
+    <form method="post" action="/configuracion/conceptos-excepcionales/asignaciones" class="rule-form">
+      <label class="field"><span>Usuario *</span><select name="usuario_id" required><option value="" selected disabled>Seleccionar</option>{% for usuario in usuarios %}<option value="{{ usuario.id }}">{{ usuario.apellido }}, {{ usuario.nombre }} · {{ usuario.legajo }}</option>{% endfor %}</select></label>
+      <label class="field"><span>Concepto *</span><select name="concepto_excepcional_id" required><option value="" selected disabled>Seleccionar</option>{% for concepto in conceptos_activos %}<option value="{{ concepto.id_concepto_excepcional }}">{{ concepto.nombre }}</option>{% endfor %}</select></label>
+      <label class="field"><span>Desde *</span><input type="date" name="fecha_desde" value="{{ fecha_hoy }}" required></label>
+      <label class="field"><span>Hasta</span><input type="date" name="fecha_hasta"><small>Dejalo vacío si no tiene vencimiento.</small></label>
+      <label class="field field-wide"><span>Motivo de la asignación *</span><textarea name="observacion" rows="3" maxlength="1000" required placeholder="Indicá por qué se habilita esta excepción"></textarea></label>
+      <div class="form-actions"><button class="ui-btn primary-btn" type="submit"><i class="bi bi-person-check"></i> Asignar concepto</button></div>
+    </form>
+    {% else %}<div class="empty-state"><i class="bi bi-person-x"></i><strong>No hay opciones disponibles para asignar</strong><span>{% if not usuarios %}No hay usuarios activos dentro de tu alcance.{% else %}Primero debe existir un concepto activo.{% endif %}</span></div>{% endif %}
+  </section>
+
+  <section class="card">
+    <div class="section-heading section-heading-pill"><div><span class="section-kicker">Seguimiento</span><h2>Asignaciones</h2></div><span class="count-chip">{{ asignaciones|length }}</span></div>
+    {% if asignaciones %}
+    <div class="form-actions" role="group" aria-label="Agrupar asignaciones">
+      <button class="ui-btn primary-btn" type="button" data-assignment-view-button="todas">Todas</button>
+      <button class="ui-btn" type="button" data-assignment-view-button="persona">Por persona</button>
+      <button class="ui-btn" type="button" data-assignment-view-button="concepto">Por concepto</button>
+    </div>
+    <div data-assignment-view="todas">{{ tabla_asignaciones(asignaciones) }}</div>
+    <div class="hidden" data-assignment-view="persona">{% for grupo in asignaciones_por_usuario %}<div class="section-heading section-heading-pill"><h3>{{ grupo.entidad.apellido }}, {{ grupo.entidad.nombre }}</h3><span class="count-chip">{{ grupo.asignaciones|length }}</span></div>{{ tabla_asignaciones(grupo.asignaciones, 'persona') }}{% endfor %}</div>
+    <div class="hidden" data-assignment-view="concepto">{% for grupo in asignaciones_por_concepto %}<div class="section-heading section-heading-pill"><h3>{{ grupo.entidad.nombre }}</h3><span class="count-chip">{{ grupo.asignaciones|length }}</span></div>{{ tabla_asignaciones(grupo.asignaciones, 'concepto') }}{% endfor %}</div>
+    {% else %}<div class="empty-state"><i class="bi bi-person-check"></i><strong>No hay asignaciones</strong><span>Asigná un concepto a una persona para comenzar.</span></div>{% endif %}
+  </section>
+</div>
+<script>
+document.querySelectorAll('[data-assignment-view-button]').forEach((button) => {
+  button.addEventListener('click', () => {
+    const selected = button.dataset.assignmentViewButton;
+    document.querySelectorAll('[data-assignment-view]').forEach((view) => view.classList.toggle('hidden', view.dataset.assignmentView !== selected));
+    document.querySelectorAll('[data-assignment-view-button]').forEach((item) => item.classList.toggle('primary-btn', item === button));
+  });
+});
+</script>
+{% endblock %}
