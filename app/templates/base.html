@@ -6,14 +6,14 @@
   <script>if(localStorage.getItem("app_theme")==="dark"){document.documentElement.dataset.theme="dark"}</script>
   <title>{% block title %}Horas extras{% endblock %} · RRHH</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
-  <link rel="stylesheet" href="{{ url_for('static', path='/css/styles.css') }}">
+  <link rel="stylesheet" href="/static/css/styles.css">
 </head>
 <body>
   {% set current_user = request.session.get("user") %}
   <header class="app-menu">
     <div class="app-menu-left">
       <a class="app-brand-mark" href="/" aria-label="Inicio" title="Inicio">
-        <img src="{{ url_for('static', path='/logoc12_1.png') }}" alt="Canal Doce" width="25" height="25">
+        <img src="/static/logoc12_1.png" alt="Canal Doce" width="25" height="25">
       </a>
       <a class="home-button{% if active_page == 'inicio' %} active{% endif %}" href="/" aria-label="Inicio" title="Inicio"><i class="bi bi-house-door-fill"></i></a>
       <span class="nav-separator" aria-hidden="true"></span>
@@ -49,7 +49,7 @@
     </div>
   </header>
   <main class="main-content">{% block content %}{% endblock %}</main>
-  <footer class="app-footer">Canal Doce © 2026 · Gestión de horas extras - V:dev0.3</footer>
-  <script src="{{ url_for('static', path='/js/app.js') }}"></script>
+  <footer class="app-footer">Canal Doce © 2026 · Gestión de horas extras - V:dev0.7</footer>
+  <script src="/static/js/app.js"></script>
 </body>
 </html>

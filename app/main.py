@@ -1,4 +1,5 @@
 import io
+import mimetypes
 import os
 import secrets
 from contextlib import asynccontextmanager
@@ -51,6 +52,9 @@ async def lifespan(_: FastAPI):
     initialize_seed_admin(SessionLocal)
     yield
 
+
+mimetypes.add_type("text/css", ".css")
+mimetypes.add_type("application/javascript", ".js")
 
 app = FastAPI(title="Horas extras", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
