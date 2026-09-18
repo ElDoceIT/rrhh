@@ -199,12 +199,13 @@ def obtener_regla_horas(
     db: Session,
 ) -> ReglaHora:
     convenio_normalizado = convenio.strip().upper()
-    tipo_dia_normalizado = tipo_dia.strip().upper()
+    tipo_dia_normalizado = tipo_dia.strip().upper().replace("Á", "A")
     reglas = list(db.scalars(
         select(ReglaHora)
         .where(
             func.upper(ReglaHora.convenio) == convenio_normalizado,
-            func.upper(ReglaHora.tipo_dia) == tipo_dia_normalizado,
+            func.replace(func.upper(ReglaHora.tipo_dia), "Á", "A")
+            == tipo_dia_normalizado,
         )
         .order_by(ReglaHora.id)
         .limit(2)
@@ -451,6 +452,7 @@ def calcular_resultado_reintegro(
     usuario_id: int,
     fecha: date,
     db: Session,
+    cantidad: Decimal = Decimal("1.00"),
 ) -> ResultadoHorasExtra:
     usuario = db.get(Usuario, usuario_id)
     if usuario is None:
@@ -459,6 +461,16 @@ def calcular_resultado_reintegro(
         raise CalculoHorasError("El usuario seleccionado está inactivo.")
     if not usuario.convenio:
         raise CalculoHorasError("El usuario no tiene un convenio asignado.")
+    cantidad = cantidad.quantize(DOS_DECIMALES, rounding=ROUND_HALF_UP)
+    cantidades_permitidas = (
+        {Decimal("0.50"), Decimal("1.00")}
+        if usuario.convenio.strip().upper() == "CISPREN"
+        else {Decimal("1.00")}
+    )
+    if cantidad not in cantidades_permitidas:
+        raise CalculoHorasError(
+            "El medio reintegro sólo está habilitado para el convenio CISPREN."
+        )
 
     feriado = db.scalar(select(Feriado).where(Feriado.fecha == fecha).limit(1))
     if feriado is not None and not feriado.devuelve:
@@ -485,4 +497,5 @@ def calcular_resultado_reintegro(
         permite_reintegro=True,
         regla_id=regla.id,
         tipo_registro="REINTEGRO",
+        cantidad=cantidad,
     )

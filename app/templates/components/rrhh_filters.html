@@ -7,7 +7,7 @@
   </a>
   <a class="period-card {{ 'active' if periodo_activo == 'monotributo' else '' }}" href="{{ request.url.path }}?periodo=monotributo">
     <span class="period-icon"><i class="bi bi-person-badge"></i></span>
-    <span><strong>Monotributo</strong><small>Del {{ periodos_rapidos.monotributo[0].strftime('%d/%m/%Y') }} al {{ periodos_rapidos.monotributo[1].strftime('%d/%m/%Y') }}</small></span>
+    <span><strong>Monotributo / Consultora</strong><small>Del {{ periodos_rapidos.monotributo[0].strftime('%d/%m/%Y') }} al {{ periodos_rapidos.monotributo[1].strftime('%d/%m/%Y') }}</small></span>
     {% if periodo_activo == 'monotributo' %}<i class="bi bi-check-circle-fill"></i>{% endif %}
   </a>
 </div>

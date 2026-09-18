@@ -34,23 +34,51 @@ document.querySelectorAll(".reintegro-select").forEach((select) => {
   });
 });
 
+function updateAutomaticDraftRows() {
+  document.querySelectorAll("[data-auto-row]").forEach((row) => {
+    const key = row.dataset.autoKey;
+    const sources = Array.from(document.querySelectorAll("[data-auto-source]"))
+      .filter((source) => source.dataset.autoKey === key);
+    const draftHours = sources.reduce(
+      (total, source) => total + Number(source.dataset.autoHours || 0), 0,
+    );
+    const baseHours = Number(row.dataset.autoBaseHours || 0);
+    const divisor = Number(row.dataset.autoDivisor || 1);
+    const quantity = Math.floor((baseHours + draftHours) / divisor);
+    row.classList.toggle("hidden", draftHours <= 0 || quantity <= 0);
+    const quantityElement = row.querySelector("[data-auto-quantity]");
+    if (quantityElement) quantityElement.textContent = String(quantity);
+    const observation = row.querySelector("[data-auto-observation]");
+    if (observation) {
+      observation.textContent = `Cálculo automático sobre ${(baseHours + draftHours).toLocaleString("es-AR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} horas extras.`;
+    }
+  });
+}
+
 function updateDraftCount() {
-  const count = document.querySelectorAll("[data-draft-row]").length;
+  const sourceCount = document.querySelectorAll("[data-draft-row]").length;
+  const automaticCount = Array.from(document.querySelectorAll("[data-auto-row]"))
+    .filter((row) => !row.classList.contains("hidden")).length;
+  const count = sourceCount + automaticCount;
   const countChip = document.querySelector("#draft-count");
   const actionCount = document.querySelector("#draft-action-count");
   const confirmButton = document.querySelector("#confirm-batch-form button");
   if (countChip) countChip.textContent = String(count);
   if (actionCount) actionCount.textContent = String(count);
-  if (confirmButton) confirmButton.disabled = count === 0;
+  if (confirmButton) confirmButton.disabled = sourceCount === 0;
 }
 
 document.querySelectorAll(".remove-draft").forEach((button) => {
   button.addEventListener("click", () => {
     const index = button.dataset.draftIndex;
     document.querySelectorAll(`[data-draft-index="${index}"]`).forEach((item) => item.remove());
+    updateAutomaticDraftRows();
     updateDraftCount();
   });
 });
+
+updateAutomaticDraftRows();
+updateDraftCount();
 
 const draftPage = document.querySelector(".draft-table");
 let allowDraftNavigation = false;
@@ -203,6 +231,10 @@ document.querySelectorAll(".request-form").forEach((form) => {
 
   const reimbursementInput = form.querySelector("[data-request-reimbursement]");
   const reimbursementHelp = form.querySelector("[data-reimbursement-help]");
+  const standardReimbursementField = form.querySelector("[data-standard-reimbursement-field]");
+  const cisprenReimbursementField = form.querySelector("[data-cispren-reimbursement-field]");
+  const cisprenReimbursement = form.querySelector("[data-cispren-reimbursement]");
+  const cisprenReimbursementHelp = form.querySelector("[data-cispren-reimbursement-help]");
   const francoInput = form.querySelector("[data-franco-check]");
   const francoHelp = form.querySelector("[data-franco-help]");
   const primaryDate = form.querySelector('input[name="fecha"]');
@@ -225,20 +257,36 @@ document.querySelectorAll(".request-form").forEach((form) => {
       && new Date(parts[0], parts[1] - 1, parts[2]).getDay() === 0;
   };
   const updateReimbursementAvailability = (isWorkedDay) => {
-    if (!reimbursementInput) return;
     const sundaySat = isSundaySat();
     const unavailable = holidaysWithoutReturn.has(primaryDate?.value || "") || sundaySat;
-    reimbursementInput.disabled = !isWorkedDay || unavailable;
-    if (unavailable) reimbursementInput.checked = false;
-    reimbursementInput.closest(".check-field")?.classList.toggle(
-      "disabled-option", unavailable,
-    );
+    const isCispren = currentConvention() === "CISPREN";
+    const isFc = currentConvention() === "FC";
+    standardReimbursementField?.classList.toggle("hidden", isCispren || isFc);
+    cisprenReimbursementField?.classList.toggle("hidden", !isCispren);
+    if (reimbursementInput) {
+      reimbursementInput.disabled = !isWorkedDay || unavailable || isCispren || isFc;
+      if (unavailable || isCispren || isFc) reimbursementInput.checked = false;
+      reimbursementInput.closest(".check-field")?.classList.toggle(
+        "disabled-option", unavailable,
+      );
+    }
+    if (cisprenReimbursement) {
+      cisprenReimbursement.disabled = !isWorkedDay || unavailable || !isCispren;
+      if (unavailable || !isCispren) cisprenReimbursement.value = "NO";
+    }
     if (reimbursementHelp) {
       reimbursementHelp.textContent = unavailable
         ? sundaySat
           ? "El trabajo en domingo no permite solicitar reintegro."
           : "Este feriado no genera devolución del día."
         : defaultReimbursementHelp;
+    }
+    if (cisprenReimbursementHelp) {
+      cisprenReimbursementHelp.textContent = unavailable
+        ? sundaySat
+          ? "El trabajo en domingo no permite solicitar reintegro."
+          : "Este feriado no genera devolución del día."
+        : "Elegí medio reintegro, reintegro completo o no solicitar.";
     }
     if (francoInput) {
       francoInput.disabled = !isWorkedDay || sundaySat;
@@ -299,11 +347,18 @@ document.querySelectorAll(".request-form").forEach((form) => {
     );
     updateReimbursementAvailability(isWorkedDay);
     updateOtherQuantityMode();
+    setHoursArticleEnabled(
+      isHours && hoursArticle?.querySelector("[data-article-enabled]")?.value === "SI",
+    );
     updateWorkedDayPreview();
   };
   const otherQuantity = form.querySelector("[data-other-quantity]");
   const exteriorQuantity = form.querySelector("[data-exterior-quantity]");
   const standardQuantity = form.querySelector("[data-standard-quantity]");
+  const otherQuantityField = form.querySelector("[data-other-quantity-field]");
+  const hoursArticle = form.querySelector("[data-article-hours-calculator]");
+  const otherArticle = form.querySelector("[data-article-other-calculator]");
+  const mainObservations = form.querySelector("[data-main-observations]");
   const userSelect = form.querySelector('select[name="usuario_id"]');
   const otherTypeSelect = form.querySelector('select[name="tipo_otra_carga"]');
   const journeyStartInput = form.querySelector("[data-journey-start-time]");
@@ -349,11 +404,10 @@ document.querySelectorAll(".request-form").forEach((form) => {
     const isWorkedDay = form.querySelector('input[name="tipo_registro"]:checked')?.value === "DIA_TRABAJADO";
     const includeExtraInput = form.querySelector("[data-include-extra]");
     const extraChoice = form.querySelector(".worked-extra-choice");
-    const shortFranco = !holidays.has(startDateValue)
-      && !(convenio === "SAT" && startDateObject?.getDay() === 0)
+    const shortWorkedDay = !(convenio === "SAT" && startDateObject?.getDay() === 0)
       && totalHours < 4;
     updateReimbursementAvailability(isWorkedDay);
-    if (shortFranco) {
+    if (shortWorkedDay) {
       if (includeExtraInput) {
         includeExtraInput.checked = false;
         includeExtraInput.disabled = true;
@@ -366,25 +420,30 @@ document.querySelectorAll(".request-form").forEach((form) => {
         reimbursementInput.disabled = true;
         reimbursementInput.closest(".check-field")?.classList.add("disabled-option");
       }
+      if (cisprenReimbursement) {
+        cisprenReimbursement.value = "NO";
+        cisprenReimbursement.disabled = true;
+      }
       if (reimbursementHelp) {
         reimbursementHelp.textContent = "Con menos de 4 horas se cargan horas extras al 100%; no corresponde reintegro del día.";
       }
     } else {
       if (includeExtraInput) includeExtraInput.disabled = !isWorkedDay;
       extraChoice?.classList.toggle("hidden", !isWorkedDay);
+      updateReimbursementAvailability(isWorkedDay);
     }
-    const dayLabel = shortFranco
-      ? `${totalHours.toLocaleString("es-AR")} h extras al 100% por franco`
+    const dayLabel = shortWorkedDay
+      ? `${totalHours.toLocaleString("es-AR")} h extras al 100% por ${holidays.has(startDateValue) ? "feriado" : "franco"}`
       : holidays.has(startDateValue) ? "Feriado trabajado" : "Franco trabajado";
     if (workedSummary) {
       workedSummary.innerHTML = `
         <span><i class="bi bi-calendar-check"></i> ${dayLabel}</span>
         <span><i class="bi bi-clock"></i> Horario informado: ${totalHours.toLocaleString("es-AR")} h</span>
         <span><i class="bi bi-moon-stars"></i> Las horas nocturnas se calcularán según el convenio</span>
-        ${shortFranco ? '<span><i class="bi bi-cup-hot"></i> Comida y merienda se calcularán sobre estas horas extras</span>' : ""}
+        ${shortWorkedDay && convenio === "SAT" ? '<span><i class="bi bi-cup-hot"></i> Comida y merienda se calcularán sobre estas horas extras</span>' : ""}
         ${touchesSunday ? '<span><i class="bi bi-calendar-week"></i> Domingo trabajado SAT</span>' : ""}`;
     }
-    if (workedExtraQuestion && !shortFranco) {
+    if (workedExtraQuestion && !shortWorkedDay) {
       workedExtraQuestion.textContent = `El horario informado abarca ${totalHours.toLocaleString("es-AR")} horas. ¿Hiciste horas extras?`;
     }
     if (workedExtraQuantity) workedExtraQuantity.max = String(totalHours);
@@ -433,14 +492,86 @@ document.querySelectorAll(".request-form").forEach((form) => {
   const updateOtherQuantityMode = () => {
     const isOther = form.querySelector('input[name="tipo_registro"]:checked')?.value === "OTRAS";
     const isExterior = (otherTypeSelect?.value || "").trim().toUpperCase() === "EXTERIOR PRENSA";
+    const isArticle = (otherTypeSelect?.value || "").trim().toUpperCase() === "HS ARTICULO";
+    otherQuantityField?.classList.toggle("hidden", !isOther || isArticle);
     standardQuantity?.classList.toggle("hidden", isExterior);
     exteriorQuantity?.classList.toggle("hidden", !isExterior);
-    if (otherQuantity) otherQuantity.disabled = !isOther || isExterior;
+    if (otherQuantity) otherQuantity.disabled = !isOther || isExterior || isArticle;
     standardQuantity?.querySelectorAll("button").forEach((button) => {
-      button.disabled = !isOther || isExterior;
+      button.disabled = !isOther || isExterior || isArticle;
     });
-    if (exteriorQuantity) exteriorQuantity.disabled = !isOther || !isExterior;
+    if (exteriorQuantity) exteriorQuantity.disabled = !isOther || !isExterior || isArticle;
+    otherArticle?.classList.toggle("hidden", !isOther || !isArticle);
+    otherArticle?.querySelectorAll("input").forEach((input) => {
+      input.disabled = !isOther || !isArticle;
+      input.required = isOther && isArticle;
+    });
+    const observation = mainObservations?.querySelector("textarea");
+    mainObservations?.classList.toggle("hidden", isOther && isArticle);
+    if (observation) {
+      observation.disabled = isOther && isArticle;
+      observation.required = !(isOther && isArticle);
+    }
   };
+
+  const updateArticleResult = (calculator) => {
+    if (!calculator) return;
+    const endDate = calculator.querySelector("[data-article-end-date]")?.value;
+    const endTime = calculator.querySelector("[data-article-end-time]")?.value;
+    const nextDate = calculator.querySelector("[data-article-next-date]")?.value;
+    const nextTime = calculator.querySelector("[data-article-next-time]")?.value;
+    const result = calculator.querySelector("[data-article-result]");
+    if (!endDate || !endTime || !nextDate || !nextTime) {
+      if (result) result.textContent = "Completá ambos momentos para calcular las HS ARTICULO.";
+      return;
+    }
+    const end = new Date(`${endDate}T${endTime}:00`);
+    const next = new Date(`${nextDate}T${nextTime}:00`);
+    const rest = (next - end) / 3600000;
+    if (rest <= 0) {
+      if (result) result.textContent = "El inicio siguiente debe ser posterior al fin de la jornada anterior.";
+    } else if (rest >= 12) {
+      if (result) result.textContent = `Descanso real: ${rest.toLocaleString("es-AR")} h. Se cumplieron las 12 horas; no corresponde HS ARTICULO.`;
+    } else if (result) {
+      const articleHours = Math.round((12 - rest) * 2) / 2;
+      result.textContent = `Descanso real: ${rest.toLocaleString("es-AR")} h. Corresponden ${articleHours.toLocaleString("es-AR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} HS ARTICULO.`;
+    }
+  };
+
+  const setHoursArticleEnabled = (enabled) => {
+    const panel = hoursArticle?.querySelector("[data-article-panel]");
+    const flag = hoursArticle?.querySelector("[data-article-enabled]");
+    panel?.classList.toggle("hidden", !enabled);
+    if (flag) flag.value = enabled ? "SI" : "NO";
+    panel?.querySelectorAll("input").forEach((input) => {
+      input.disabled = !enabled;
+      input.required = enabled;
+    });
+  };
+
+  const fillArticleEndFromHours = () => {
+    if (!hoursArticle || !primaryDate?.value || !endInput.value) return;
+    const endDateInput = hoursArticle.querySelector("[data-article-end-date]");
+    const endTimeInput = hoursArticle.querySelector("[data-article-end-time]");
+    const endDate = localDate(primaryDate.value);
+    if (startInput.value && timeToMinutes(endInput.value) < timeToMinutes(startInput.value)) {
+      endDate.setDate(endDate.getDate() + 1);
+    }
+    if (endDateInput) endDateInput.value = isoLocalDate(endDate);
+    if (endTimeInput) endTimeInput.value = endInput.value;
+    updateArticleResult(hoursArticle);
+  };
+
+  hoursArticle?.querySelector("[data-article-toggle]")?.addEventListener("click", () => {
+    const enabled = hoursArticle.querySelector("[data-article-enabled]")?.value !== "SI";
+    setHoursArticleEnabled(enabled);
+    if (enabled) fillArticleEndFromHours();
+  });
+  [hoursArticle, otherArticle].forEach((calculator) => {
+    calculator?.querySelectorAll("input[type='date'], input[type='time']").forEach((input) => {
+      input.addEventListener("change", () => updateArticleResult(calculator));
+    });
+  });
   const changeOtherQuantity = (delta) => {
     if (!otherQuantity) return;
     const nextValue = Math.max(0.5, (Number(otherQuantity.value) || 1) + delta);
@@ -459,6 +590,9 @@ document.querySelectorAll(".request-form").forEach((form) => {
     updateOtherQuantityMode();
     updateMainConceptDescription();
   });
+  primaryDate?.addEventListener("change", fillArticleEndFromHours);
+  startInput.addEventListener("change", fillArticleEndFromHours);
+  endInput.addEventListener("change", fillArticleEndFromHours);
 
   const conceptSection = form.querySelector("[data-additional-concepts]");
   const conceptRows = conceptSection?.querySelector("[data-concept-rows]");

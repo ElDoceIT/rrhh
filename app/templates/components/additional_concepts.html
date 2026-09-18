@@ -8,7 +8,7 @@
     <div class="additional-concept-row">
       <label class="field"><span>Concepto *</span><select name="concepto_adicional_tipo" required>
         <option value="" selected disabled>Seleccionar</option>
-        {% for convenio, tipo, descripcion in tipos_otras_cargas %}<option value="{{ tipo }}" data-convenio="{{ convenio }}" data-description="{{ descripcion or '' }}">{{ tipo }}</option>{% endfor %}
+        {% for convenio, tipo, descripcion in tipos_otras_cargas %}{% if tipo|upper != 'HS ARTICULO' %}<option value="{{ tipo }}" data-convenio="{{ convenio }}" data-description="{{ descripcion or '' }}">{{ tipo }}</option>{% endif %}{% endfor %}
         {% for concepto in conceptos_excepcionales %}<option value="EXCEPCIONAL:{{ concepto.id_concepto_excepcional }}" data-description="{{ concepto.descripcion or 'Concepto habilitado para vos.' }}">{{ concepto.nombre }}</option>{% endfor %}
       </select><small data-concept-description>Seleccioná un concepto para ver qué representa.</small></label>
       <label class="field"><span>Cantidad *</span><input type="number" name="concepto_adicional_cantidad" value="1" min="0.5" max="999999.5" step="0.5" required><select class="hidden" data-additional-exterior-quantity disabled required><option value="3">3</option><option value="6">6</option></select></label>

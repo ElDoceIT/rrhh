@@ -3,6 +3,7 @@ ROLES_DISPONIBLES = (
     "DIGITAL",
     "REALIZACIONES",
     "ADMIN",
+    "ADMINISTRACION",
     "NOTICIERO",
     "RRHH",
     "TECNICA",

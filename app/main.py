@@ -4,7 +4,7 @@ import os
 import secrets
 from contextlib import asynccontextmanager
 from datetime import date, datetime, time, timedelta
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Annotated, NamedTuple
 from urllib.parse import quote, unquote
 
@@ -112,12 +112,14 @@ def rule_form_data(
     observaciones: str | None,
 ) -> dict:
     convenio = convenio.strip().upper()
-    tipo_dia = tipo_dia.strip()
+    tipo_dia = tipo_dia.strip().upper().replace("Á", "A")
     tipo_hora = tipo_hora.strip()
     if not convenio or not tipo_dia or not tipo_hora:
         raise HTTPException(status_code=422, detail="Completá los campos obligatorios.")
     if convenio not in CONVENIOS_DISPONIBLES:
         raise HTTPException(status_code=422, detail="El convenio seleccionado no es válido.")
+    if tipo_dia not in {"HABIL", "FERIADO", "FRANCO", "TODOS"}:
+        raise HTTPException(status_code=422, detail="El tipo de día seleccionado no es válido.")
     return {
         "convenio": convenio,
         "tipo_dia": tipo_dia,
@@ -366,23 +368,25 @@ def recalcular_conceptos_jornada_pendiente(
     usuario = db.get(Usuario, usuario_id)
     if usuario is None:
         raise CalculoHorasError("El usuario de la jornada no existe.")
+    reglas_automaticas = list(db.scalars(
+        select(ReglaHora).where(
+            func.upper(ReglaHora.convenio) == str(usuario.convenio or "").upper(),
+            func.upper(ReglaHora.tipo_dia) == "TODOS",
+            func.upper(ReglaHora.tipo_hora).in_(CONCEPTOS_DERIVADOS),
+        ).order_by(ReglaHora.id)
+    ))
+    reglas_por_concepto: dict[str, ReglaHora] = {}
+    for regla_automatica in reglas_automaticas:
+        reglas_por_concepto.setdefault(
+            str(regla_automatica.tipo_hora).upper(), regla_automatica,
+        )
     for concepto, cantidad in cantidades.items():
         registros = por_tipo[concepto]
-        if cantidad <= 0:
+        regla = reglas_por_concepto.get(concepto)
+        if regla is None or cantidad <= 0:
             for registro in registros:
                 db.delete(registro)
             continue
-        regla = db.scalar(
-            select(ReglaHora).where(
-                func.upper(ReglaHora.convenio) == str(usuario.convenio or "").upper(),
-                func.upper(ReglaHora.tipo_dia) == "TODOS",
-                func.upper(ReglaHora.tipo_hora) == concepto,
-            ).order_by(ReglaHora.id).limit(1)
-        )
-        if regla is None:
-            raise CalculoHorasError(
-                f"No existe la regla {concepto} para el convenio {usuario.convenio}."
-            )
         registro = registros[0] if registros else HoraExtra(
             usuario_id=usuario_id,
             fecha=fecha_jornada,
@@ -404,6 +408,89 @@ def recalcular_conceptos_jornada_pendiente(
         registro.observaciones = f"Cálculo automático sobre {total:.2f} horas extras."
         for duplicado in registros[1:]:
             db.delete(duplicado)
+
+
+def conceptos_automaticos_borrador(
+    resultados: list,
+    db: Session,
+) -> tuple[list[dict], list[str | None]]:
+    """Proyecta comida y merienda sin incorporarlas a las cargas confirmables."""
+    cierres_medianoche = {
+        (item.usuario_id, item.fecha)
+        for item in resultados
+        if item.tipo_registro == "HORAS" and item.hora_fin == time(0, 0)
+    }
+    claves: list[str | None] = []
+    grupos: dict[tuple[int, date], dict] = {}
+    for item in resultados:
+        if item.tipo_registro != "HORAS":
+            claves.append(None)
+            continue
+        fecha_jornada = item.fecha
+        if (
+            item.hora_inicio == time(0, 0)
+            and (item.usuario_id, item.fecha - timedelta(days=1))
+            in cierres_medianoche
+        ):
+            fecha_jornada -= timedelta(days=1)
+        clave_html = f"{item.usuario_id}:{fecha_jornada.isoformat()}"
+        claves.append(clave_html)
+        grupo = grupos.setdefault((item.usuario_id, fecha_jornada), {
+            "muestra": item,
+            "horas_borrador": Decimal("0.00"),
+            "clave": clave_html,
+        })
+        grupo["horas_borrador"] += item.horas_totales or Decimal("0.00")
+
+    if not grupos:
+        return [], claves
+
+    convenios = {
+        str(grupo["muestra"].convenio or "").strip().upper()
+        for grupo in grupos.values()
+    }
+    reglas = list(db.scalars(
+        select(ReglaHora).where(
+            func.upper(ReglaHora.convenio).in_(convenios),
+            func.upper(ReglaHora.tipo_dia) == "TODOS",
+            func.upper(ReglaHora.tipo_hora).in_(CONCEPTOS_DERIVADOS),
+        )
+    ))
+    habilitados = {
+        (str(regla.convenio).strip().upper(), str(regla.tipo_hora).strip().upper())
+        for regla in reglas
+    }
+    conceptos = []
+    for (usuario_id, fecha_jornada), grupo in grupos.items():
+        muestra = grupo["muestra"]
+        convenio = str(muestra.convenio or "").strip().upper()
+        horas_existentes = sum(
+            (
+                item.horas_totales or Decimal("0.00")
+                for item in horas_pendientes_de_jornada(
+                    usuario_id, fecha_jornada, db,
+                )
+            ),
+            start=Decimal("0.00"),
+        )
+        total = horas_existentes + grupo["horas_borrador"]
+        for concepto, divisor in (("MERIENDA", 2), ("COMIDA", 3)):
+            cantidad = int(total // Decimal(divisor))
+            if (convenio, concepto) not in habilitados or cantidad <= 0:
+                continue
+            conceptos.append({
+                "usuario_nombre": muestra.usuario_nombre,
+                "legajo": muestra.legajo,
+                "fecha": fecha_jornada,
+                "tipo_dia": muestra.tipo_dia,
+                "tipo_hora": concepto,
+                "cantidad": cantidad,
+                "clave": grupo["clave"],
+                "divisor": divisor,
+                "horas_existentes": horas_existentes,
+                "observaciones": f"Cálculo automático sobre {total:.2f} horas extras.",
+            })
+    return conceptos, claves
 
 
 def expandir_ids_con_jornadas_pendientes(
@@ -501,7 +588,9 @@ def decode_carga(value: str) -> tuple[int, date, time | None, time | None, str |
 def calcular_carga_codificada(datos, db: Session):
     usuario_id, fecha, hora_inicio, hora_fin, _, tipo_registro, marcar_como_franco, tipo_hora, cantidad, concepto_id, concepto_nombre = datos
     if tipo_registro == "REINTEGRO":
-        return calcular_resultado_reintegro(usuario_id, fecha, db)
+        return calcular_resultado_reintegro(
+            usuario_id, fecha, db, cantidad or Decimal("1.00"),
+        )
     if tipo_registro == "DIA_TRABAJADO":
         return calcular_resultado_dia_trabajado(
             usuario_id, fecha, db, marcar_como_franco=marcar_como_franco,
@@ -734,6 +823,8 @@ def inicio(request: Request, db: Session = Depends(get_db)):
 def home(
     request: Request,
     estado: str | None = None,
+    fecha_desde: date | None = None,
+    fecha_hasta: date | None = None,
     guardado: int | None = None,
     db: Session = Depends(get_db),
 ):
@@ -744,6 +835,18 @@ def home(
     assignment = obtener_asignacion_activa(request, db)
     es_jefe = assignment.perfil.upper() == "JEFE"
     error = None
+    estado_filtro = str(estado or "").strip().upper()
+    if estado_filtro not in {"", "PENDIENTE", "APROBADA", "RECHAZADA"}:
+        estado_filtro = ""
+    usuario_actual = db.scalar(
+        select(Usuario)
+        .options(selectinload(Usuario.tipo_contratacion))
+        .where(Usuario.id == session_user_id)
+    )
+    if fecha_desde is None and fecha_hasta is None and usuario_actual is not None:
+        fecha_desde, fecha_hasta, _ = limites_fecha_carga_usuario(usuario_actual)
+    if fecha_desde and fecha_hasta and fecha_desde > fecha_hasta:
+        error = "La fecha desde no puede ser posterior a la fecha hasta."
     try:
         consulta = (
             select(HoraExtra)
@@ -751,15 +854,21 @@ def home(
             .where(HoraExtra.usuario_id == session_user_id)
             .order_by(HoraExtra.fecha.desc(), HoraExtra.hora_inicio.desc())
         )
-        if estado:
-            consulta = consulta.where(HoraExtra.estado == estado)
+        if fecha_desde:
+            consulta = consulta.where(HoraExtra.fecha >= fecha_desde)
+        if fecha_hasta:
+            consulta = consulta.where(HoraExtra.fecha <= fecha_hasta)
+        if estado_filtro:
+            consulta = consulta.where(HoraExtra.estado == estado_filtro)
         horas = list(db.scalars(consulta))
     except SQLAlchemyError:
         error = "No se pudieron cargar las horas extras. Verificá la conexión con la base."
     return templates.TemplateResponse(request, "dashboard.html", {
         "active_page": "horas",
         "horas": horas,
-        "estado_filtro": estado or "",
+        "estado_filtro": estado_filtro,
+        "fecha_desde": fecha_desde,
+        "fecha_hasta": fecha_hasta,
         "guardado": guardado,
         "total_horas": sum(
             (hora.horas_totales or Decimal("0.00") for hora in horas),
@@ -846,14 +955,18 @@ def aplicar_periodo_rapido_rrhh(
     periodos = periodos_rapidos_rrhh(date.today())
     if periodo_activo in periodos:
         fecha_desde, fecha_hasta = periodos[periodo_activo]
-        tipo_buscado = "nómina" if periodo_activo == "nomina" else "monotributo"
-        tipo = next(
-            (item for item in tipos if item.contratacion.strip().lower() == tipo_buscado),
-            None,
+        tipos_buscados = (
+            {"nómina", "nomina"}
+            if periodo_activo == "nomina"
+            else {"monotributo", "consultora"}
         )
+        tipos_periodo = [
+            item.id_tipo_contratacion for item in tipos
+            if item.contratacion.strip().lower() in tipos_buscados
+        ]
         # Si el catálogo estuviera incompleto, el acceso rápido no debe mostrar
         # accidentalmente personas de otros tipos de contratación.
-        contrataciones = [tipo.id_tipo_contratacion] if tipo else [-1]
+        contrataciones = tipos_periodo or [-1]
     return periodo_activo, fecha_desde, fecha_hasta, contrataciones, periodos
 
 
@@ -869,9 +982,11 @@ def limites_fecha_carga_usuario(
     if contratacion in {"nómina", "nomina"}:
         desde, hasta = periodos["nomina"]
         return desde, hasta, "Nómina"
-    if contratacion == "monotributo":
+    if contratacion in {"monotributo", "consultora"}:
         desde, hasta = periodos["monotributo"]
-        return desde, hasta, "Monotributo"
+        return desde, hasta, (
+            "Consultora" if contratacion == "consultora" else "Monotributo"
+        )
     return None, None, None
 
 
@@ -882,6 +997,39 @@ def validar_fecha_carga_usuario(usuario: Usuario, fecha_carga: date) -> None:
             f"Para {contratacion}, la fecha debe estar entre "
             f"el {desde.strftime('%d/%m/%Y')} y el {hasta.strftime('%d/%m/%Y')}."
         )
+
+
+def calcular_descanso_articulo(
+    fecha_fin: date | None,
+    hora_fin: time | None,
+    fecha_inicio: date | None,
+    hora_inicio: time | None,
+) -> tuple[date, Decimal, str] | None:
+    if not all((fecha_fin, hora_fin, fecha_inicio, hora_inicio)):
+        raise CalculoHorasError(
+            "Completá la fecha y hora de fin de jornada y de inicio de la siguiente."
+        )
+    if hora_fin.minute not in {0, 30} or hora_inicio.minute not in {0, 30}:
+        raise CalculoHorasError("Los horarios de HS ARTICULO deben ingresarse cada 30 minutos.")
+    fin = datetime.combine(fecha_fin, hora_fin)
+    inicio = datetime.combine(fecha_inicio, hora_inicio)
+    if inicio <= fin:
+        raise CalculoHorasError("El inicio de la jornada siguiente debe ser posterior al fin de la anterior.")
+    descanso = Decimal(int((inicio - fin).total_seconds())) / Decimal("3600")
+    faltantes = Decimal("12.00") - descanso
+    if faltantes <= 0:
+        return None
+    cantidad = (
+        (faltantes * Decimal("2")).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        / Decimal("2")
+    ).quantize(Decimal("0.0"))
+    observacion = (
+        f"Fin de jornada anterior: {fecha_fin.strftime('%d/%m/%Y')} {hora_fin.strftime('%H:%M')}. "
+        f"Inicio de jornada siguiente: {fecha_inicio.strftime('%d/%m/%Y')} {hora_inicio.strftime('%H:%M')}. "
+        f"Descanso real: {descanso:.2f} horas. Descanso requerido: 12 horas. "
+        f"HS ARTICULO: {cantidad:.1f} horas."
+    )
+    return fecha_inicio, cantidad, observacion
 
 
 def aplicar_filtros_rrhh(
@@ -1031,7 +1179,7 @@ def conceptos_exportables_hora(hora: HoraExtra) -> list[tuple[str, Decimal]]:
         conceptos.append((concepto, Decimal("1.00")))
     elif tipo_registro == "REINTEGRO":
         concepto = "REINTEGRO FERIADO" if tipo_dia == "FERIADO" else "REINTEGRO FRANCO"
-        conceptos.append((concepto, Decimal("1.00")))
+        conceptos.append((concepto, hora.cantidad or Decimal("1.00")))
 
     # La nocturnidad es un adicional y se exporta además del concepto base.
     if hora.horas_nocturnas and hora.horas_nocturnas > 0:
@@ -1291,6 +1439,11 @@ def procesar_solicitud(
     concepto_adicional_tipo: Annotated[list[str] | None, Form()] = None,
     concepto_adicional_cantidad: Annotated[list[Decimal] | None, Form()] = None,
     concepto_adicional_observacion: Annotated[list[str] | None, Form()] = None,
+    calcular_hs_articulo: Annotated[str | None, Form()] = None,
+    articulo_fin_fecha: Annotated[date | None, Form()] = None,
+    articulo_fin_hora: Annotated[time | None, Form()] = None,
+    articulo_inicio_fecha: Annotated[date | None, Form()] = None,
+    articulo_inicio_hora: Annotated[time | None, Form()] = None,
     db: Session = Depends(get_db),
 ):
     fechas = list(dict.fromkeys(fecha))
@@ -1309,6 +1462,7 @@ def procesar_solicitud(
     selecciones_reintegro = selecciones_reintegro[:len(cargas_codificadas)]
     error = None
     try:
+        tipo_registro = tipo_registro.strip().upper()
         if len(fecha) != len(fechas):
             raise CalculoHorasError("No repitas una fecha en la misma carga.")
         observacion_limpia = clean_optional(observaciones)
@@ -1329,7 +1483,6 @@ def procesar_solicitud(
                 raise CalculoHorasError("Una de las cargas contiene un usuario no autorizado.")
             resultados.append(calcular_carga_codificada(datos, db))
             observaciones_resultados.append(datos[4])
-        tipo_registro = tipo_registro.strip().upper()
         nuevos_items = []
         tipos_adicionales = list(concepto_adicional_tipo or [])
         cantidades_adicionales = list(concepto_adicional_cantidad or [])
@@ -1344,6 +1497,10 @@ def procesar_solicitud(
         for tipo, cantidad_adicional, observacion_adicional in zip(
             tipos_adicionales, cantidades_adicionales, observaciones_adicionales,
         ):
+            if tipo.strip().upper() == "HS ARTICULO":
+                raise CalculoHorasError(
+                    "Calculá HS ARTICULO desde el apartado de descanso entre jornadas."
+                )
             if cantidad_adicional <= 0 or cantidad_adicional % Decimal("0.5") != 0:
                 raise CalculoHorasError(
                     f"La cantidad de {tipo} debe ingresarse de a 0,5."
@@ -1380,6 +1537,10 @@ def procesar_solicitud(
         if tipo_registro == "OTRAS":
             if not tipo_otra_carga or cantidad is None:
                 raise CalculoHorasError("Seleccioná un tipo de carga e ingresá la cantidad.")
+            if tipo_otra_carga.strip().upper() == "HS ARTICULO":
+                raise CalculoHorasError(
+                    "HS ARTICULO sólo puede calcularse desde una carga de horas extras."
+                )
             if tipo_otra_carga.startswith("EXCEPCIONAL:"):
                 try:
                     concepto_id = int(tipo_otra_carga.split(":", 1)[1])
@@ -1424,6 +1585,25 @@ def procesar_solicitud(
                         resultado, fecha_tramo, inicio_tramo, fin_tramo, "HORAS", False,
                     ))
                 agregar_conceptos_adicionales(fecha_seleccionada)
+            if str(calcular_hs_articulo or "").upper() == "SI":
+                if len(fechas) != 1:
+                    raise CalculoHorasError(
+                        "Para calcular HS ARTICULO cargá una sola fecha de horas extras."
+                    )
+                calculo_articulo = calcular_descanso_articulo(
+                    articulo_fin_fecha, articulo_fin_hora,
+                    articulo_inicio_fecha, articulo_inicio_hora,
+                )
+                if calculo_articulo is not None:
+                    fecha_articulo, cantidad_articulo, observacion_articulo = calculo_articulo
+                    validar_fecha_carga_usuario(usuario_carga, fecha_articulo)
+                    articulo = calcular_resultado_otra_carga(
+                        usuario_id, fecha_articulo, "HS ARTICULO", cantidad_articulo, db,
+                    )
+                    nuevos_items.append((
+                        articulo, fecha_articulo, None, None, "OTRAS", False,
+                        observacion_articulo,
+                    ))
         elif tipo_registro == "DIA_TRABAJADO":
             if jornada_hora_inicio is None or jornada_hora_fin is None:
                 raise CalculoHorasError("Ingresá la hora de inicio y finalización de la jornada.")
@@ -1437,24 +1617,24 @@ def procesar_solicitud(
             domingo_inicio = es_domingo_sat(usuario_carga, fecha_principal)
             es_feriado = clasificar_tipo_dia(fecha_principal, db) == "FERIADO"
             franco_declarado = not es_feriado and not domingo_inicio
-            franco_corto = (
-                franco_declarado
-                and horas_jornada < Decimal("4.00")
+            jornada_corta = (
+                not domingo_inicio and horas_jornada < Decimal("4.00")
             )
             es_franco = False
-            if franco_corto:
+            if jornada_corta:
                 for fecha_tramo, inicio_tramo, fin_tramo in tramos_jornada:
+                    tramo_franco = franco_declarado
                     resultado = calcular_resultado_horas_extra(
                         usuario_id, fecha_tramo, inicio_tramo, fin_tramo, db,
-                        marcar_como_franco=True,
+                        marcar_como_franco=tramo_franco,
                     )
                     if "100" not in str(resultado.tipo_hora or ""):
                         raise CalculoHorasError(
-                            "La regla de franco debe corresponder a horas al 100%."
+                            "La regla de franco o feriado debe corresponder a horas al 100%."
                         )
                     nuevos_items.append((
                         resultado, fecha_tramo, inicio_tramo, fin_tramo,
-                        "HORAS", True,
+                        "HORAS", tramo_franco,
                     ))
             elif domingo_inicio:
                 if existe_domingo_activo_o_en_borrador(
@@ -1502,11 +1682,11 @@ def procesar_solicitud(
                 nuevos_items.append((
                     domingo, fecha_domingo, None, None, "OTRAS", False,
                 ))
-            if incluye_horas_extra == "on" and franco_corto:
+            if incluye_horas_extra == "on" and jornada_corta:
                 raise CalculoHorasError(
-                    "Un franco de menos de 4 horas ya se registra íntegramente como horas extras al 100%."
+                    "Un franco o feriado de menos de 4 horas ya se registra íntegramente como horas extras al 100%."
                 )
-            if incluye_horas_extra == "on" and not franco_corto:
+            if incluye_horas_extra == "on" and not jornada_corta:
                 if cantidad_horas_extra is None:
                     raise CalculoHorasError(
                         "Ingresá la cantidad de horas extras."
@@ -1538,14 +1718,21 @@ def procesar_solicitud(
                         resultado, fecha_tramo, inicio_tramo, fin_tramo,
                         "HORAS", tramo_franco,
                     ))
-            if solicita_reintegro_dia == "on":
-                if franco_corto:
+            seleccion_reintegro = str(solicita_reintegro_dia or "NO").upper()
+            if seleccion_reintegro in {"ON", "MEDIO", "COMPLETO"}:
+                if jornada_corta:
                     raise CalculoHorasError(
-                        "Un franco de menos de 4 horas no genera reintegro del día."
+                        "Un franco o feriado de menos de 4 horas no genera reintegro del día."
                     )
                 if domingo_inicio:
                     raise CalculoHorasError("El trabajo en domingo no permite solicitar reintegro.")
-                reintegro = calcular_resultado_reintegro(usuario_id, fecha_principal, db)
+                cantidad_reintegro = (
+                    Decimal("0.50") if seleccion_reintegro == "MEDIO"
+                    else Decimal("1.00")
+                )
+                reintegro = calcular_resultado_reintegro(
+                    usuario_id, fecha_principal, db, cantidad_reintegro,
+                )
                 nuevos_items.append((
                     reintegro, fecha_principal, None, None, "REINTEGRO", es_franco,
                 ))
@@ -1567,7 +1754,7 @@ def procesar_solicitud(
                 tipo_item,
                 marcar_como_franco=es_franco_item,
                 tipo_hora=resultado.tipo_hora if tipo_item == "OTRAS" else None,
-                cantidad=resultado.cantidad if tipo_item in {"OTRAS", "EXCEPCIONAL"} else None,
+                cantidad=resultado.cantidad if tipo_item in {"OTRAS", "EXCEPCIONAL", "REINTEGRO"} else None,
                 concepto_excepcional_id=resultado.concepto_excepcional_id,
                 concepto_excepcional_nombre=resultado.concepto_excepcional_nombre,
             )
@@ -1583,12 +1770,17 @@ def procesar_solicitud(
 
     _, usuarios = usuarios_habilitados_para_carga(request, db)
     fecha_minima, fecha_maxima, _ = limites_fecha_carga_usuario(usuarios[0]) if usuarios else (None, None, None)
+    conceptos_automaticos, claves_jornada = conceptos_automaticos_borrador(
+        resultados, db,
+    )
     return templates.TemplateResponse(
         request,
         "solicitud.html",
         {
             "active_page": "horas",
             "resultados": resultados,
+            "claves_jornada": claves_jornada,
+            "conceptos_automaticos": conceptos_automaticos,
             "observaciones_resultados": observaciones_resultados,
             "cargas": cargas_codificadas,
             "reintegros": selecciones_reintegro,
@@ -2518,11 +2710,14 @@ def guardar_hora_propia(
             raise CalculoHorasError("La observación es obligatoria.")
         validar_fecha_carga_usuario(hour.usuario, fecha)
         if hour.tipo_registro == "REINTEGRO":
-            result = calcular_resultado_reintegro(hour.usuario_id, fecha, db)
+            result = calcular_resultado_reintegro(
+                hour.usuario_id, fecha, db, hour.cantidad or Decimal("1.00"),
+            )
             hour.hora_inicio = None
             hour.hora_fin = None
             hour.horas_totales = None
             hour.horas_nocturnas = None
+            hour.cantidad = result.cantidad
             hour.solicita_reintegro = True
         elif hour.tipo_registro == "DIA_TRABAJADO":
             if hora_inicio is None or hora_fin is None:
