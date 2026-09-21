@@ -135,30 +135,31 @@ Antes de comenzar:
 
 ## FC
 
-### 16. Horas extras hábiles
+### 16. FC no permite cargar horas extras
 
-- [ ] Cargar un día hábil de 18:00 a 20:00.
+- [ ] Ingresar con un usuario FC y revisar **¿Qué querés registrar?**.
+- [ ] Intentar enviar manualmente una carga de horas extras, aunque la opción no aparezca en pantalla.
 
-**Resultado esperado:** se generan **2 horas al 50%**. No se calculan horas nocturnas, comida ni merienda.
+**Resultado esperado:** FC solamente muestra **Franco o feriado trabajado**. La carga de horas extras también debe ser rechazada por el servidor y no debe quedar en el borrador.
 
 ### 17. Franco menor a cuatro horas
 
 - [ ] Informar un franco de 08:00 a 11:00.
 
-**Resultado esperado:** se generan **3 horas al 100%**, sin día franco trabajado y sin reintegro.
+**Resultado esperado:** se genera **1 franco trabajado**, aunque la jornada dure menos de cuatro horas. No se generan horas al 100%, reintegro, comida ni merienda.
 
-### 18. Feriado desde la cuarta hora sin reintegro
+### 18. Feriado FC sin mínimo y sin reintegro
 
-- [ ] En un feriado con **Devuelve = Sí**, informar 08:00 a 12:00.
+- [ ] En un feriado con **Devuelve = Sí**, informar 08:00 a 10:00.
 - [ ] Revisar las opciones disponibles.
 
-**Resultado esperado:** se genera **1 feriado trabajado**. Aunque el feriado devuelva, FC no muestra ni permite solicitar reintegro.
+**Resultado esperado:** se genera **1 feriado trabajado**. Aunque sólo dure dos horas y el feriado devuelva, FC no muestra ni permite solicitar reintegro.
 
-### 19. Jornada FC nocturna
+### 19. Jornada FC nocturna informativa
 
-- [ ] Cargar horas de un día hábil de 22:00 a 01:00.
+- [ ] Informar un franco trabajado de 22:00 a 01:00.
 
-**Resultado esperado:** se registran **3 horas al 50%**, divididas por fecha cuando corresponda, pero **sin horas nocturnas**, porque FC no tiene franja nocturna configurada.
+**Resultado esperado:** se registra **1 franco trabajado**, conservando el horario completo como respaldo. No se generan horas extras ni un concepto de nocturnidad.
 
 ### 20. Autorización, bloqueo de edición y exportación
 
@@ -180,6 +181,36 @@ Antes de comenzar:
 **Resultado esperado:** el sistema calcula un descanso real de **9 horas** sobre las **12 horas** requeridas y agrega a la vista previa un registro separado de **3 HS ARTICULO**, fechado el sábado. La cantidad no puede modificarse manualmente.
 
 **Observación automática esperada:** `Fin de jornada anterior: [viernes] 23:00. Inicio de jornada siguiente: [sábado] 08:00. Descanso real: 9 horas. Descanso requerido: 12 horas. HS ARTICULO: 3 horas.`
+
+## Nuevas reglas — FC y MONOTRIBUTISTA
+
+### 22. FC: jornada extensa sin horas extras ni reintegro
+
+- [ ] Como usuario FC, informar un franco de 08:00 a 18:00.
+- [ ] Revisar si se ofrecen horas extras asociadas o reintegro.
+
+**Resultado esperado:** se genera únicamente **1 franco trabajado**. La duración queda registrada como respaldo, pero no se generan horas extras y no aparecen opciones de reintegro.
+
+### 23. MONOTRIBUTISTA: horas extras en día hábil
+
+- [ ] Como usuario con convenio MONOTRIBUTISTA, cargar **2 horas al 50%** en un día hábil.
+- [ ] Repetir con una carga válida de horas al 100%, según las reglas configuradas.
+
+**Resultado esperado:** ambas cargas se permiten como registros independientes con su tipo y cantidad. No se generan comida, merienda ni reintegro.
+
+### 24. MONOTRIBUTISTA: franco corto con horas extras asociadas
+
+- [ ] Informar un franco trabajado de 18:00 a 20:00.
+- [ ] Seleccionar que también realizó horas extras e ingresar **1 hora**.
+
+**Resultado esperado:** aunque la jornada sea menor a cuatro horas, se generan por separado **1 franco trabajado** y **1 hora extra** del tipo correspondiente a FRANCO. No se convierte toda la jornada en horas extras y no se permite solicitar reintegro.
+
+### 25. MONOTRIBUTISTA: feriado largo sin horas extras
+
+- [ ] En un feriado marcado **Devuelve = Sí**, informar una jornada de 09:00 a 17:00.
+- [ ] No agregar horas extras.
+
+**Resultado esperado:** se genera únicamente **1 feriado trabajado**. No aparece ni se genera reintegro, independientemente de la duración y de que el feriado esté marcado como que devuelve.
 
 ## Control general de resultados
 
@@ -208,5 +239,9 @@ Completar al ejecutar cada caso:
 | 19 |  |  | Pendiente |  |
 | 20 |  |  | Pendiente |  |
 | 21 |  |  | Pendiente |  |
+| 22 |  |  | Pendiente |  |
+| 23 |  |  | Pendiente |  |
+| 24 |  |  | Pendiente |  |
+| 25 |  |  | Pendiente |  |
 
 Estados sugeridos: **OK**, **Falló** o **No se pudo probar**.

@@ -261,11 +261,13 @@ document.querySelectorAll(".request-form").forEach((form) => {
     const unavailable = holidaysWithoutReturn.has(primaryDate?.value || "") || sundaySat;
     const isCispren = currentConvention() === "CISPREN";
     const isFc = currentConvention() === "FC";
-    standardReimbursementField?.classList.toggle("hidden", isCispren || isFc);
+    const isMonotributista = currentConvention() === "MONOTRIBUTISTA";
+    const noReimbursement = isFc || isMonotributista;
+    standardReimbursementField?.classList.toggle("hidden", isCispren || noReimbursement);
     cisprenReimbursementField?.classList.toggle("hidden", !isCispren);
     if (reimbursementInput) {
-      reimbursementInput.disabled = !isWorkedDay || unavailable || isCispren || isFc;
-      if (unavailable || isCispren || isFc) reimbursementInput.checked = false;
+      reimbursementInput.disabled = !isWorkedDay || unavailable || isCispren || noReimbursement;
+      if (unavailable || isCispren || noReimbursement) reimbursementInput.checked = false;
       reimbursementInput.closest(".check-field")?.classList.toggle(
         "disabled-option", unavailable,
       );
@@ -322,7 +324,7 @@ document.querySelectorAll(".request-form").forEach((form) => {
       });
     });
     form.querySelectorAll(".associated-loads-field").forEach((field) => {
-      const isAssociatedLoad = isHours || isWorkedDay;
+      const isAssociatedLoad = (isHours || isWorkedDay) && currentConvention() !== "FC";
       field.classList.toggle("hidden", !isAssociatedLoad);
       field.querySelectorAll("select, input, textarea, button").forEach((control) => {
         control.disabled = !isAssociatedLoad;
@@ -347,8 +349,11 @@ document.querySelectorAll(".request-form").forEach((form) => {
     );
     updateReimbursementAvailability(isWorkedDay);
     updateOtherQuantityMode();
+    const articleAvailable = isHours && currentConvention() === "SAT";
+    hoursArticle?.classList.toggle("hidden", !articleAvailable);
     setHoursArticleEnabled(
-      isHours && hoursArticle?.querySelector("[data-article-enabled]")?.value === "SI",
+      articleAvailable
+      && hoursArticle?.querySelector("[data-article-enabled]")?.value === "SI",
     );
     updateWorkedDayPreview();
   };
@@ -404,7 +409,9 @@ document.querySelectorAll(".request-form").forEach((form) => {
     const isWorkedDay = form.querySelector('input[name="tipo_registro"]:checked')?.value === "DIA_TRABAJADO";
     const includeExtraInput = form.querySelector("[data-include-extra]");
     const extraChoice = form.querySelector(".worked-extra-choice");
-    const shortWorkedDay = !(convenio === "SAT" && startDateObject?.getDay() === 0)
+    const noMinimumWorkedDay = convenio === "FC" || convenio === "MONOTRIBUTISTA";
+    const shortWorkedDay = !noMinimumWorkedDay
+      && !(convenio === "SAT" && startDateObject?.getDay() === 0)
       && totalHours < 4;
     updateReimbursementAvailability(isWorkedDay);
     if (shortWorkedDay) {
@@ -428,8 +435,16 @@ document.querySelectorAll(".request-form").forEach((form) => {
         reimbursementHelp.textContent = "Con menos de 4 horas se cargan horas extras al 100%; no corresponde reintegro del día.";
       }
     } else {
-      if (includeExtraInput) includeExtraInput.disabled = !isWorkedDay;
-      extraChoice?.classList.toggle("hidden", !isWorkedDay);
+      const canIncludeExtra = isWorkedDay && convenio !== "FC";
+      if (includeExtraInput) {
+        includeExtraInput.disabled = !canIncludeExtra;
+        if (!canIncludeExtra) includeExtraInput.checked = false;
+      }
+      extraChoice?.classList.toggle("hidden", !canIncludeExtra);
+      if (!canIncludeExtra) {
+        if (workedExtraQuantity) workedExtraQuantity.disabled = true;
+        form.querySelector(".worked-extra-quantity")?.classList.add("hidden");
+      }
       updateReimbursementAvailability(isWorkedDay);
     }
     const dayLabel = shortWorkedDay
@@ -439,7 +454,7 @@ document.querySelectorAll(".request-form").forEach((form) => {
       workedSummary.innerHTML = `
         <span><i class="bi bi-calendar-check"></i> ${dayLabel}</span>
         <span><i class="bi bi-clock"></i> Horario informado: ${totalHours.toLocaleString("es-AR")} h</span>
-        <span><i class="bi bi-moon-stars"></i> Las horas nocturnas se calcularán según el convenio</span>
+        ${convenio === "FC" ? "" : '<span><i class="bi bi-moon-stars"></i> Las horas nocturnas se calcularán según el convenio</span>'}
         ${shortWorkedDay && convenio === "SAT" ? '<span><i class="bi bi-cup-hot"></i> Comida y merienda se calcularán sobre estas horas extras</span>' : ""}
         ${touchesSunday ? '<span><i class="bi bi-calendar-week"></i> Domingo trabajado SAT</span>' : ""}`;
     }

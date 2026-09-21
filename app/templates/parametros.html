@@ -19,7 +19,7 @@
   <section class="card form-card" id="formulario-regla">
     <div class="section-heading section-heading-pill">
       <div><span class="section-kicker">Reglas de cálculo</span><h2>{% if regla_edicion %}Editar regla #{{ regla_edicion.id }}{% else %}Nueva regla{% endif %}</h2></div>
-      {% if regla_edicion %}<a class="ui-btn" href="/configuracion/parametros"><i class="bi bi-x-lg"></i> Cancelar edición</a>{% endif %}
+      {% if regla_edicion %}<div class="form-actions"><a class="ui-btn" href="/configuracion/parametros"><i class="bi bi-x-lg"></i> Cancelar edición</a><form method="post" action="/configuracion/parametros/reglas/{{ regla_edicion.id }}/eliminar" class="inline-form" onsubmit="return confirm('¿Eliminar la regla {{ regla_edicion.convenio }} · {{ regla_edicion.tipo_dia }} · {{ regla_edicion.tipo_hora }}? Dejará de estar disponible para cargas nuevas.');"><button class="ui-btn danger-btn" type="submit"><i class="bi bi-trash"></i> Borrar regla</button></form></div>{% endif %}
     </div>
     <form method="post" action="{% if regla_edicion %}/configuracion/parametros/reglas/{{ regla_edicion.id }}{% else %}/configuracion/parametros/reglas{% endif %}" class="rule-form">
       <label class="field"><span>Convenio <b>*</b></span><select name="convenio" required><option value="" disabled {% if not regla_edicion %}selected{% endif %}>Seleccionar</option>{% for convenio in convenios_disponibles %}<option value="{{ convenio }}" {% if regla_edicion and regla_edicion.convenio|upper == convenio %}selected{% endif %}>{{ convenio }}</option>{% endfor %}</select></label>

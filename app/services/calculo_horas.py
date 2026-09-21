@@ -83,6 +83,14 @@ def calcular_resultado_dia_trabajado(
                 "La fecha no es feriado. Indicá que corresponde a un franco."
             )
         tipo_dia = "FRANCO"
+    convenio_normalizado = usuario.convenio.strip().upper()
+    regla_fc = None
+    if convenio_normalizado == "FC":
+        regla_fc = obtener_regla_horas(usuario.convenio, tipo_dia, db)
+        if str(regla_fc.tipo_hora or "").strip().upper().replace("_", " ") != "DIA TRABAJADO":
+            raise CalculoHorasError(
+                "La regla de FC debe tener el tipo de hora DIA TRABAJADO."
+            )
     if (hora_inicio is None) != (hora_fin is None):
         raise CalculoHorasError("Ingresá el horario completo de la jornada trabajada.")
     horas_totales = None
@@ -94,14 +102,15 @@ def calcular_resultado_dia_trabajado(
             start=Decimal("0.00"),
         )
         horas_nocturnas = Decimal("0.00")
-        for fecha_tramo, inicio, fin in tramos:
-            tipo_tramo = clasificar_tipo_dia(fecha_tramo, db)
-            if fecha_tramo == fecha and tipo_dia == "FRANCO":
-                tipo_tramo = "FRANCO"
-            regla = obtener_regla_horas(usuario.convenio, tipo_tramo, db)
-            horas_nocturnas += calcular_horas_nocturnas(
-                inicio, fin, regla.hora_nocturna_desde, regla.hora_nocturna_hasta,
-            )
+        if convenio_normalizado != "FC":
+            for fecha_tramo, inicio, fin in tramos:
+                tipo_tramo = clasificar_tipo_dia(fecha_tramo, db)
+                if fecha_tramo == fecha and tipo_dia == "FRANCO":
+                    tipo_tramo = "FRANCO"
+                regla = obtener_regla_horas(usuario.convenio, tipo_tramo, db)
+                horas_nocturnas += calcular_horas_nocturnas(
+                    inicio, fin, regla.hora_nocturna_desde, regla.hora_nocturna_hasta,
+                )
     return ResultadoHorasExtra(
         usuario_id=usuario.id,
         usuario_nombre=f"{usuario.apellido}, {usuario.nombre}",
@@ -236,6 +245,11 @@ def calcular_resultado_otra_carga(
     tipo_hora_normalizado = tipo_hora.strip().upper()
     if tipo_hora_normalizado in {"COMIDA", "MERIENDA", "DOMINGO"}:
         raise CalculoHorasError("El tipo de carga seleccionado no está permitido.")
+    if (
+        tipo_hora_normalizado == "HS ARTICULO"
+        and usuario.convenio.strip().upper() != "SAT"
+    ):
+        raise CalculoHorasError("HS ARTICULO sólo está habilitado para el convenio SAT.")
     if tipo_hora_normalizado == "EXTERIOR PRENSA" and cantidad not in {
         Decimal("3"), Decimal("6"),
     }:

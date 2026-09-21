@@ -12,7 +12,7 @@ Estado relevado del código y de los parámetros vigentes al **16/09/2026**.
 - Las horas comunes se resuelven buscando una única regla para la combinación **convenio + tipo de día** (`HABIL`, `FERIADO` o `FRANCO`).
 - Las horas nocturnas se calculan con la franja configurada en esa regla.
 - En la carga normal de horas extras sólo se admiten días hábiles, salvo el tratamiento especial de domingo para SAT. Los feriados y francos se cargan desde **Franco o feriado trabajado**.
-- Si un franco o feriado se trabajó menos de 4 horas, se cargan las horas reales trabajadas al 100%. Desde las 4 horas se registra como **franco trabajado** o **feriado trabajado**.
+- Como regla general, si un franco o feriado se trabajó menos de 4 horas, se cargan las horas reales trabajadas al 100%. FC y MONOTRIBUTISTA son excepciones: siempre registran 1 día trabajado, cualquiera sea la duración.
 - En un franco o feriado trabajado se pueden indicar horas extras adicionales. La cantidad debe ser múltiplo de `0,5`, no puede superar la jornada y se toma desde el final del horario informado.
 - El reintegro sólo se permite si la regla del convenio y tipo de día lo habilita. Además, un feriado marcado con `devuelve = NO` no admite reintegro.
 - Los registros pendientes pueden modificarse o eliminarse; los autorizados o rechazados no pueden modificarse.
@@ -69,11 +69,20 @@ Reglas especiales de domingo SAT:
 
 | Tipo de día | Tipo resultante | Nocturnidad | Reintegro | Observación vigente |
 |---|---:|---|---|---|
-| HABIL | 50 | Sin configurar | No | Horas extra de día hábil |
-| FERIADO | 100 | Sin configurar | No | Horas extra de día feriado |
-| FRANCO | 100 | Sin configurar | No | Horas extra de día franco |
+| FERIADO | DIA TRABAJADO | No | No | Informa 1 feriado trabajado, sin mínimo de horas |
+| FRANCO | DIA TRABAJADO | No | No | Informa 1 franco trabajado, sin mínimo de horas |
 
-FC no muestra la opción de solicitar reintegro. Tampoco tiene reglas de COMIDA, MERIENDA ni horas hábiles al 100%.
+FC sólo permite informar un franco o feriado trabajado. No permite horas extras, reintegros, otras cargas, conceptos asociados, COMIDA ni MERIENDA. Si la jornada cruza medianoche conserva el horario completo sin exigir una regla HABIL ni calcular nocturnidad.
+
+## MONOTRIBUTISTA
+
+| Tipo de día | Tipo resultante | Nocturnidad | Reintegro | Observación vigente |
+|---|---:|---|---|---|
+| HABIL | 50 | Sin configurar | No | Horas extras de día hábil |
+| FERIADO | 100 | Sin configurar | No | Horas extras asociadas a un feriado trabajado |
+| FRANCO | 100 | Sin configurar | No | Horas extras asociadas a un franco trabajado |
+
+MONOTRIBUTISTA registra 1 franco o feriado trabajado cualquiera sea la duración. Puede agregar horas extras dentro de esa carga, que se clasifican automáticamente según el tipo de día. No permite reintegro y no tiene configuradas COMIDA ni MERIENDA.
 
 ## Otras cargas y conceptos excepcionales
 

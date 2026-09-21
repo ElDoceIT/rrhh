@@ -145,20 +145,23 @@ Ejemplo: sábado de 23:30 a domingo 07:00 → se divide por fecha, se calcula la
 
 ## Convenio FC
 
-- **Día hábil:** las horas extras se cargan al 50%.
-- **Franco:** menos de 4 horas se pagan como horas reales al 100%; desde la cuarta hora se registra 1 franco trabajado.
-- **Feriado:** menos de 4 horas se pagan como horas reales al 100%; desde la cuarta hora se registra 1 feriado trabajado.
-- FC nunca permite solicitar reintegro. La opción no se muestra en la carga.
-- No tiene franja nocturna configurada.
-- No tiene configuradas COMIDA ni MERIENDA, por lo que esos conceptos no se calculan.
+- Sólo permite informar un franco o feriado trabajado.
+- Siempre registra cantidad 1, sin importar cuántas horas duró la jornada.
+- No aplica el mínimo de cuatro horas.
+- No permite horas extras, reintegro, otras cargas ni conceptos asociados.
+- Conserva el horario informado como respaldo, pero no calcula nocturnidad, COMIDA ni MERIENDA.
 
-Ejemplos:
+Ejemplo: franco de 08:00 a 10:00 → 1 franco trabajado, sin horas extras ni reintegro.
 
-- Día hábil de 18:00 a 20:00 → 2 horas al 50%.
-- Franco de 08:00 a 11:00 → 3 horas al 100%, sin día trabajado ni reintegro.
-- Feriado de 08:00 a 12:00 → 1 feriado trabajado, sin reintegro.
+## Convenio MONOTRIBUTISTA
 
-Actualmente FC no tiene una regla de día hábil al 100%. Si también debe permitir esa carga, se necesita incorporar la selección entre 50% y 100% junto con el parámetro correspondiente.
+- **Día hábil:** las horas extras se clasifican automáticamente al 50%.
+- **Franco o feriado:** siempre registra 1 día trabajado, sin mínimo de cuatro horas.
+- Puede agregar horas extras asociadas; se clasifican automáticamente al 100%.
+- No permite solicitar reintegro.
+- No tiene configuradas COMIDA ni MERIENDA.
+
+Ejemplo: franco de 18:00 a 20:00 con 1 hora extra informada → 1 franco trabajado y 1 hora al 100%.
 
 ## Conceptos excepcionales
 
@@ -178,9 +181,8 @@ Esta regla depende del tipo de contratación, no del convenio:
 ## Puntos concretos que RRHH debería validar
 
 1. Si CISPREN realmente debe pagar las horas de día hábil al 100%.
-2. Si la regla “franco o feriado trabajado desde la cuarta hora” corresponde igual para CISPREN, SAL, SAT y FC.
+2. Si la regla “franco o feriado trabajado desde la cuarta hora” corresponde igual para CISPREN, SAL y SAT. FC y MONOTRIBUTISTA no usan ese mínimo.
 3. Si comida y merienda deben calcularse simultáneamente cada 2 y 3 horas, respectivamente.
-4. Si CISPREN, SAL y FC también necesitan reglas de comida y merienda.
+4. Si CISPREN y SAL también necesitan reglas de comida y merienda.
 5. Si los sábados después de las 13:00 para SAT deben detectarse automáticamente como franco. Hoy no se detectan automáticamente.
-6. Si FC también debe permitir elegir horas hábiles al 100%, además de las actuales al 50%.
-7. Si un domingo SAT que también es feriado debe continuar tratándose sólo como DOMINGO y sin reintegro.
+6. Si un domingo SAT que también es feriado debe continuar tratándose sólo como DOMINGO y sin reintegro.

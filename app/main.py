@@ -587,6 +587,16 @@ def decode_carga(value: str) -> tuple[int, date, time | None, time | None, str |
 
 def calcular_carga_codificada(datos, db: Session):
     usuario_id, fecha, hora_inicio, hora_fin, _, tipo_registro, marcar_como_franco, tipo_hora, cantidad, concepto_id, concepto_nombre = datos
+    usuario = db.get(Usuario, usuario_id)
+    convenio = str(usuario.convenio or "").strip().upper() if usuario else ""
+    if convenio == "FC" and tipo_registro != "DIA_TRABAJADO":
+        raise CalculoHorasError(
+            "FC sólo permite informar un franco o feriado trabajado."
+        )
+    if convenio == "MONOTRIBUTISTA" and tipo_registro == "REINTEGRO":
+        raise CalculoHorasError(
+            "MONOTRIBUTISTA no permite solicitar reintegro."
+        )
     if tipo_registro == "REINTEGRO":
         return calcular_resultado_reintegro(
             usuario_id, fecha, db, cantidad or Decimal("1.00"),
@@ -1390,10 +1400,10 @@ def rrhh_exportacion_xlsx(
 def nueva_solicitud(
     request: Request,
     destino: str = "propio",
+    error: str | None = None,
     db: Session = Depends(get_db),
 ):
     usuarios: list[Usuario] = []
-    error = None
     try:
         _, usuarios = usuarios_habilitados_para_carga(request, db)
         destino = "propio"
@@ -1414,6 +1424,62 @@ def nueva_solicitud(
         "feriados_sin_devolucion": fechas_feriados_sin_devolucion(db),
         "error": error,
     })
+
+
+def renderizar_borrador_solicitud(
+    request: Request,
+    db: Session,
+    resultados: list,
+    cargas: list[str],
+    reintegros: list[str],
+    observaciones_resultados: list[str | None],
+    error: str | None = None,
+    destino: str = "propio",
+    status_code: int = 200,
+):
+    _, usuarios = usuarios_habilitados_para_carga(request, db)
+    fecha_minima, fecha_maxima, _ = (
+        limites_fecha_carga_usuario(usuarios[0])
+        if usuarios else (None, None, None)
+    )
+    conceptos_automaticos, claves_jornada = conceptos_automaticos_borrador(
+        resultados, db,
+    )
+    return templates.TemplateResponse(
+        request,
+        "solicitud.html",
+        {
+            "active_page": "horas",
+            "resultados": resultados,
+            "claves_jornada": claves_jornada,
+            "conceptos_automaticos": conceptos_automaticos,
+            "observaciones_resultados": observaciones_resultados,
+            "cargas": cargas,
+            "reintegros": reintegros,
+            "usuarios": usuarios,
+            "usuario_fijo": usuarios[0] if destino == "propio" and usuarios else None,
+            "destino": destino,
+            "fecha_hoy": date.today().isoformat(),
+            "fecha_minima": fecha_minima.isoformat() if fecha_minima else "",
+            "fecha_maxima": fecha_maxima.isoformat() if fecha_maxima else "",
+            "tipos_otras_cargas": tipos_otras_cargas(db),
+            "conceptos_excepcionales": conceptos_excepcionales_habilitados(
+                db, usuarios[0].id,
+            ) if usuarios else [],
+            "feriados": fechas_feriados(db),
+            "feriados_sin_devolucion": fechas_feriados_sin_devolucion(db),
+            "total_horas": sum(
+                (item.horas_totales or Decimal("0.00") for item in resultados),
+                start=Decimal("0.00"),
+            ),
+            "total_nocturnas": sum(
+                (item.horas_nocturnas or Decimal("0.00") for item in resultados),
+                start=Decimal("0.00"),
+            ),
+            "error": error,
+        },
+        status_code=status_code,
+    )
 
 
 @app.post("/solicitudes/procesar", response_class=HTMLResponse)
@@ -1475,6 +1541,36 @@ def procesar_solicitud(
         )
         if usuario_carga is None:
             raise CalculoHorasError("No tenés permiso para cargar horas al usuario seleccionado.")
+        convenio_carga = str(usuario_carga.convenio or "").strip().upper()
+        if convenio_carga == "FC" and tipo_registro != "DIA_TRABAJADO":
+            raise CalculoHorasError(
+                "FC sólo permite informar un franco o feriado trabajado."
+            )
+        if convenio_carga == "FC" and (
+            incluye_horas_extra == "on"
+            or concepto_adicional_tipo
+            or str(calcular_hs_articulo or "").upper() == "SI"
+        ):
+            raise CalculoHorasError(
+                "FC no permite agregar horas extras ni conceptos adicionales."
+            )
+        if (
+            str(calcular_hs_articulo or "").upper() == "SI"
+            and convenio_carga != "SAT"
+        ):
+            raise CalculoHorasError(
+                "HS ARTICULO sólo está habilitado para el convenio SAT."
+            )
+        seleccion_reintegro_solicitada = str(
+            solicita_reintegro_dia or "NO"
+        ).upper()
+        if (
+            convenio_carga in {"FC", "MONOTRIBUTISTA"}
+            and seleccion_reintegro_solicitada in {"ON", "MEDIO", "COMPLETO", "SI"}
+        ):
+            raise CalculoHorasError(
+                f"{convenio_carga} no permite solicitar reintegro."
+            )
         for fecha_seleccionada in fechas:
             validar_fecha_carga_usuario(usuario_carga, fecha_seleccionada)
         for carga in cargas_codificadas:
@@ -1618,7 +1714,9 @@ def procesar_solicitud(
             es_feriado = clasificar_tipo_dia(fecha_principal, db) == "FERIADO"
             franco_declarado = not es_feriado and not domingo_inicio
             jornada_corta = (
-                not domingo_inicio and horas_jornada < Decimal("4.00")
+                convenio_carga not in {"FC", "MONOTRIBUTISTA"}
+                and not domingo_inicio
+                and horas_jornada < Decimal("4.00")
             )
             es_franco = False
             if jornada_corta:
@@ -1686,6 +1784,10 @@ def procesar_solicitud(
                 raise CalculoHorasError(
                     "Un franco o feriado de menos de 4 horas ya se registra íntegramente como horas extras al 100%."
                 )
+            if incluye_horas_extra == "on" and convenio_carga == "FC":
+                raise CalculoHorasError(
+                    "FC no permite agregar horas extras al día trabajado."
+                )
             if incluye_horas_extra == "on" and not jornada_corta:
                 if cantidad_horas_extra is None:
                     raise CalculoHorasError(
@@ -1718,7 +1820,7 @@ def procesar_solicitud(
                         resultado, fecha_tramo, inicio_tramo, fin_tramo,
                         "HORAS", tramo_franco,
                     ))
-            seleccion_reintegro = str(solicita_reintegro_dia or "NO").upper()
+            seleccion_reintegro = seleccion_reintegro_solicitada
             if seleccion_reintegro in {"ON", "MEDIO", "COMPLETO"}:
                 if jornada_corta:
                     raise CalculoHorasError(
@@ -1768,36 +1870,9 @@ def procesar_solicitud(
     except CalculoHorasError as exc:
         error = str(exc)
 
-    _, usuarios = usuarios_habilitados_para_carga(request, db)
-    fecha_minima, fecha_maxima, _ = limites_fecha_carga_usuario(usuarios[0]) if usuarios else (None, None, None)
-    conceptos_automaticos, claves_jornada = conceptos_automaticos_borrador(
-        resultados, db,
-    )
-    return templates.TemplateResponse(
-        request,
-        "solicitud.html",
-        {
-            "active_page": "horas",
-            "resultados": resultados,
-            "claves_jornada": claves_jornada,
-            "conceptos_automaticos": conceptos_automaticos,
-            "observaciones_resultados": observaciones_resultados,
-            "cargas": cargas_codificadas,
-            "reintegros": selecciones_reintegro,
-            "usuarios": usuarios,
-            "usuario_fijo": usuarios[0] if destino == "propio" and usuarios else None,
-            "destino": destino,
-            "fecha_hoy": date.today().isoformat(),
-            "fecha_minima": fecha_minima.isoformat() if fecha_minima else "",
-            "fecha_maxima": fecha_maxima.isoformat() if fecha_maxima else "",
-            "tipos_otras_cargas": tipos_otras_cargas(db),
-            "conceptos_excepcionales": conceptos_excepcionales_habilitados(db, usuarios[0].id) if usuarios else [],
-            "feriados": fechas_feriados(db),
-            "feriados_sin_devolucion": fechas_feriados_sin_devolucion(db),
-            "total_horas": sum((item.horas_totales or Decimal("0.00") for item in resultados), start=Decimal("0.00")),
-            "total_nocturnas": sum((item.horas_nocturnas or Decimal("0.00") for item in resultados), start=Decimal("0.00")),
-            "error": error,
-        },
+    return renderizar_borrador_solicitud(
+        request, db, resultados, cargas_codificadas, selecciones_reintegro,
+        observaciones_resultados, error=error, destino=destino,
         status_code=422 if error and not resultados else 200,
     )
 
@@ -1814,7 +1889,11 @@ def confirmar_solicitud(
         return RedirectResponse("/solicitudes/nueva", status_code=303)
     selecciones = list(reintegros or [])
     if len(selecciones) != len(cargas):
-        raise HTTPException(status_code=422, detail="La selección de reintegros es inconsistente.")
+        return RedirectResponse(
+            "/solicitudes/nueva?error="
+            + quote("La selección de reintegros es inconsistente."),
+            status_code=303,
+        )
 
     try:
         ids_permitidos = ids_habilitados_para_confirmar(request, db)
@@ -1826,7 +1905,7 @@ def confirmar_solicitud(
         }
         resultados_confirmacion = []
         conceptos_unicos = set()
-        for datos in datos_cargas:
+        for indice, datos in enumerate(datos_cargas):
             if datos[0] not in ids_permitidos:
                 raise CalculoHorasError("Una de las cargas contiene un usuario no autorizado.")
             if not datos[4]:
@@ -1834,6 +1913,14 @@ def confirmar_solicitud(
             usuario_carga = db.get(Usuario, datos[0])
             if usuario_carga is None:
                 raise CalculoHorasError("El usuario de una carga no existe.")
+            convenio_carga = str(usuario_carga.convenio or "").strip().upper()
+            if (
+                convenio_carga in {"FC", "MONOTRIBUTISTA"}
+                and selecciones[indice] == "SI"
+            ):
+                raise CalculoHorasError(
+                    f"{convenio_carga} no permite solicitar reintegro."
+                )
             fecha_a_validar = datos[1]
             if (
                 datos[5] == "HORAS"
@@ -1925,7 +2012,27 @@ def confirmar_solicitud(
     except (CalculoHorasError, SQLAlchemyError) as error:
         db.rollback()
         mensaje = str(error) if isinstance(error, CalculoHorasError) else "No se pudo guardar la solicitud en la base de datos."
-        raise HTTPException(status_code=422, detail=mensaje) from error
+        try:
+            datos_borrador = [decode_carga(carga) for carga in cargas]
+            resultados_borrador = [
+                calcular_carga_codificada(datos, db) for datos in datos_borrador
+            ]
+            return renderizar_borrador_solicitud(
+                request,
+                db,
+                resultados_borrador,
+                cargas,
+                selecciones,
+                [datos[4] for datos in datos_borrador],
+                error=mensaje,
+                status_code=422,
+            )
+        except (CalculoHorasError, SQLAlchemyError):
+            db.rollback()
+            return RedirectResponse(
+                "/solicitudes/nueva?error=" + quote(mensaje),
+                status_code=303,
+            )
     return RedirectResponse(f"/horas?guardado={len(cargas)}", status_code=303)
 
 
@@ -2216,6 +2323,29 @@ def actualizar_regla(
     return RedirectResponse("/configuracion/parametros?guardado=actualizada", status_code=303)
 
 
+@app.post("/configuracion/parametros/reglas/{regla_id}/eliminar")
+def eliminar_regla(
+    regla_id: int,
+    db: Session = Depends(get_db),
+):
+    regla = db.get(ReglaHora, regla_id)
+    if regla is None:
+        raise HTTPException(status_code=404, detail="La regla no existe.")
+    try:
+        db.delete(regla)
+        db.commit()
+    except SQLAlchemyError as error:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="No se pudo eliminar la regla.",
+        ) from error
+    return RedirectResponse(
+        "/configuracion/parametros?guardado=eliminada",
+        status_code=303,
+    )
+
+
 @app.get("/configuracion/usuarios", response_class=HTMLResponse)
 def usuarios_y_roles(
     request: Request,
@@ -2225,6 +2355,8 @@ def usuarios_y_roles(
     error: str | None = None,
     filtro_rol: str | None = None,
     filtro_perfil: str | None = None,
+    filtro_tipo_contratacion: int | None = None,
+    filtro_convenio: str | None = None,
     filtro_estado: str = "ACTIVO",
     db: Session = Depends(get_db),
 ):
@@ -2236,17 +2368,25 @@ def usuarios_y_roles(
     error_ad = None
     filtro_rol = (filtro_rol or "").strip().upper()
     filtro_perfil = (filtro_perfil or "").strip().upper()
+    filtro_convenio = (filtro_convenio or "").strip().upper()
     filtro_estado = filtro_estado.strip().upper()
     if filtro_rol not in ROLES_DISPONIBLES:
         filtro_rol = ""
     if filtro_perfil not in PERFILES_DISPONIBLES:
         filtro_perfil = ""
+    if filtro_convenio not in CONVENIOS_DISPONIBLES:
+        filtro_convenio = ""
     if filtro_estado not in {"ACTIVO", "INACTIVO"}:
         filtro_estado = "ACTIVO"
     try:
         tipos_contratacion = list(db.scalars(
             select(TipoContratacion).order_by(TipoContratacion.id_tipo_contratacion)
         ))
+        ids_tipos_contratacion = {
+            item.id_tipo_contratacion for item in tipos_contratacion
+        }
+        if filtro_tipo_contratacion not in ids_tipos_contratacion:
+            filtro_tipo_contratacion = None
         consulta_usuarios = (
             select(Usuario)
             .options(selectinload(Usuario.roles), selectinload(Usuario.tipo_contratacion))
@@ -2261,6 +2401,14 @@ def usuarios_y_roles(
         if condiciones_asignacion:
             consulta_usuarios = consulta_usuarios.where(
                 Usuario.roles.any(and_(*condiciones_asignacion))
+            )
+        if filtro_tipo_contratacion is not None:
+            consulta_usuarios = consulta_usuarios.where(
+                Usuario.id_tipo_contratacion == filtro_tipo_contratacion
+            )
+        if filtro_convenio:
+            consulta_usuarios = consulta_usuarios.where(
+                func.upper(Usuario.convenio) == filtro_convenio
             )
         usuarios = list(db.scalars(consulta_usuarios))
         if editar_usuario is not None:
@@ -2291,6 +2439,8 @@ def usuarios_y_roles(
         "perfiles_disponibles": PERFILES_DISPONIBLES,
         "filtro_rol": filtro_rol,
         "filtro_perfil": filtro_perfil,
+        "filtro_tipo_contratacion": filtro_tipo_contratacion,
+        "filtro_convenio": filtro_convenio,
         "filtro_estado": filtro_estado,
     })
 
