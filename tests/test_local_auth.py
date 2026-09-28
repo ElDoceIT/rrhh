@@ -43,9 +43,11 @@ from app.main import (
     aplicar_periodo_rapido_rrhh,
     app,
     calcular_descanso_articulo,
+    convenios_visibles_para_reglas,
     confirmar_solicitud,
     conceptos_automaticos_borrador,
     detalle_exportacion_rrhh,
+    descripcion_concepto_regla,
     encode_carga,
     eliminar_regla,
     expandir_ids_con_jornadas_pendientes,
@@ -57,6 +59,8 @@ from app.main import (
     recalcular_conceptos_jornada_pendiente,
     rechazar_horas,
     rule_form_data,
+    tutorial_html_for_key,
+    tutorial_key_for_assignment,
     usuarios_habilitados_para_carga,
 )
 from fastapi import HTTPException
@@ -116,6 +120,84 @@ class LocalAuthTests(unittest.TestCase):
             CONVENIOS_DISPONIBLES,
             ("CISPREN", "SAL", "SAT", "FC", "MONOTRIBUTISTA"),
         )
+
+    def test_tutorial_scope_uses_active_role_profile_and_convention(self):
+        usuario = Usuario(
+            nombre="Ana", apellido="Ejemplo", username="tutorial",
+            hashed_password="x", origen="LOCAL", status=True, convenio="SAT",
+        )
+        self.assertEqual(
+            tutorial_key_for_assignment(UsuarioRol(rol="TECNICA", perfil="USUARIO"), usuario),
+            "SAT",
+        )
+        self.assertEqual(
+            tutorial_key_for_assignment(UsuarioRol(rol="TECNICA", perfil="JEFE"), usuario),
+            "JEFATURA",
+        )
+        self.assertEqual(
+            tutorial_key_for_assignment(UsuarioRol(rol="RRHH", perfil="USUARIO"), usuario),
+            "RRHH",
+        )
+        self.assertEqual(
+            tutorial_key_for_assignment(UsuarioRol(rol="ADMIN", perfil="JEFE"), usuario),
+            "ADMIN",
+        )
+
+    def test_filtered_tutorial_does_not_include_other_flows(self):
+        sat_html = tutorial_html_for_key("SAT")
+        self.assertIn('SAT:{steps:[', sat_html)
+        self.assertNotIn('RRHH:{steps:[', sat_html)
+        self.assertNotIn('JEFATURA:{steps:[', sat_html)
+        self.assertIn('start("SAT")', sat_html)
+
+        admin_html = tutorial_html_for_key("ADMIN")
+        self.assertIn('SAT:{steps:[', admin_html)
+        self.assertIn('RRHH:{steps:[', admin_html)
+        self.assertIn('JEFATURA:{steps:[', admin_html)
+
+    def test_rule_guide_visibility_depends_on_active_access(self):
+        with self.Session() as db:
+            jefe = Usuario(
+                nombre="Jefa", apellido="Ejemplo", username="jefa-reglas",
+                hashed_password="x", origen="LOCAL", status=True, convenio="SAT",
+            )
+            usuario_sat = Usuario(
+                nombre="Sat", apellido="Ejemplo", username="sat-reglas",
+                hashed_password="x", origen="LOCAL", status=True, convenio="SAT",
+            )
+            usuario_sal = Usuario(
+                nombre="Sal", apellido="Ejemplo", username="sal-reglas",
+                hashed_password="x", origen="LOCAL", status=True, convenio="SAL",
+            )
+            jefe.roles.append(UsuarioRol(rol="TECNICA", perfil="JEFE"))
+            usuario_sat.roles.append(UsuarioRol(rol="TECNICA", perfil="USUARIO"))
+            usuario_sal.roles.append(UsuarioRol(rol="COMERCIAL", perfil="USUARIO"))
+            db.add_all([jefe, usuario_sat, usuario_sal])
+            db.commit()
+
+            self.assertEqual(
+                convenios_visibles_para_reglas(jefe.roles[0], jefe, db),
+                ["SAT"],
+            )
+            self.assertEqual(
+                convenios_visibles_para_reglas(usuario_sal.roles[0], usuario_sal, db),
+                ["SAL"],
+            )
+            self.assertEqual(
+                convenios_visibles_para_reglas(
+                    UsuarioRol(rol="RRHH", perfil="USUARIO"), usuario_sal, db,
+                ),
+                list(CONVENIOS_DISPONIBLES),
+            )
+
+    def test_rule_concepts_are_explained_with_user_facing_names(self):
+        self.assertEqual(
+            descripcion_concepto_regla("50")["nombre"],
+            "Horas extras al 50 %",
+        )
+        dia = descripcion_concepto_regla("DIA_TRABAJADO")
+        self.assertEqual(dia["nombre"], "Día trabajado completo")
+        self.assertIn("cantidad registrada es 1 día", dia["descripcion"])
 
     def test_rule_form_normalizes_habil_and_rejects_unknown_day_types(self):
         data = rule_form_data(

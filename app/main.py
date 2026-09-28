@@ -5,6 +5,7 @@ import secrets
 from contextlib import asynccontextmanager
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal, ROUND_HALF_UP
+from pathlib import Path
 from typing import Annotated, NamedTuple
 from urllib.parse import quote, unquote
 
@@ -59,6 +60,48 @@ mimetypes.add_type("application/javascript", ".js")
 app = FastAPI(title="Horas extras", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 templates = Jinja2Templates(directory="app/templates")
+
+TUTORIAL_HTML_PATH = Path(__file__).resolve().parent.parent / "docs" / "index.html"
+TUTORIAL_KEYS = ("CISPREN", "SAL", "SAT", "FC", "MONOTRIBUTISTA", "JEFATURA", "RRHH")
+TUTORIAL_LABELS = {
+    "ADMIN": "Abrir tutorial completo",
+    "RRHH": "Abrir guía de RRHH",
+    "JEFATURA": "Abrir guía para Jefatura",
+    "CISPREN": "Abrir guía de carga CISPREN",
+    "SAL": "Abrir guía de carga SAL",
+    "SAT": "Abrir guía de carga SAT",
+    "FC": "Abrir guía de carga FC",
+    "MONOTRIBUTISTA": "Abrir guía de carga MONOTRIBUTISTA",
+}
+REGLAS_GENERALES_CONVENIO = {
+    "CISPREN": [
+        "En un franco o feriado, menos de 4 horas se registra como horas al 100%.",
+        "Desde la cuarta hora se registra 1 día trabajado.",
+        "Puede solicitarse medio reintegro, reintegro completo o ninguno cuando el día lo permite.",
+    ],
+    "SAL": [
+        "Las horas extras de un día hábil se clasifican según la regla vigente.",
+        "En un franco o feriado, menos de 4 horas se registra como horas al 100% y desde la cuarta hora como 1 día trabajado.",
+        "El reintegro aparece solamente cuando la regla y el feriado lo permiten.",
+    ],
+    "SAT": [
+        "En un franco o feriado, menos de 4 horas se registra como horas al 100% y desde la cuarta hora como 1 día trabajado.",
+        "Comida y merienda se calculan automáticamente sobre las horas extras de una misma jornada, si existen esas reglas.",
+        "En domingo puede generarse el concepto DOMINGO con cantidad 1 y sin reintegro.",
+        "HS ARTICULO está disponible exclusivamente para SAT.",
+    ],
+    "FC": [
+        "Solamente permite informar un franco o feriado trabajado.",
+        "Siempre se registra 1 día trabajado, sin aplicar el límite de 4 horas.",
+        "No permite horas extras, reintegro, nocturnidad ni otras cargas.",
+    ],
+    "MONOTRIBUTISTA": [
+        "Las horas extras de un día hábil se clasifican automáticamente según la regla vigente.",
+        "Un franco o feriado siempre genera 1 día trabajado, sin aplicar el límite de 4 horas.",
+        "Las horas extras adicionales de ese franco o feriado se registran por separado al 100%.",
+        "No permite solicitar reintegro.",
+    ],
+}
 
 PUBLIC_PATHS = {"/login", "/health", "/health/db", "/health/database"}
 
@@ -156,6 +199,145 @@ def obtener_asignacion_activa(request: Request, db: Session) -> UsuarioRol:
             detail="Seleccioná un rol y perfil activo.",
         )
     return assignment
+
+
+def tutorial_key_for_assignment(assignment: UsuarioRol, usuario: Usuario) -> str:
+    role = str(assignment.rol or "").strip().upper()
+    profile = str(assignment.perfil or "").strip().upper()
+    if role == "ADMIN":
+        return "ADMIN"
+    if role == "RRHH":
+        return "RRHH"
+    if profile == "JEFE":
+        return "JEFATURA"
+    convenio = str(usuario.convenio or "").strip().upper()
+    if convenio not in CONVENIOS_DISPONIBLES:
+        raise HTTPException(
+            status_code=422,
+            detail="El usuario activo no tiene un convenio válido para mostrar el tutorial.",
+        )
+    return convenio
+
+
+def tutorial_html_for_key(tutorial_key: str) -> str:
+    if tutorial_key != "ADMIN" and tutorial_key not in TUTORIAL_KEYS:
+        raise HTTPException(status_code=404, detail="El tutorial solicitado no existe.")
+    try:
+        html = TUTORIAL_HTML_PATH.read_text(encoding="utf-8")
+    except OSError as error:
+        raise HTTPException(status_code=500, detail="No se pudo abrir el tutorial.") from error
+
+    html = html.replace(
+        '<span class="demo-chip">Instructivo · No guarda datos</span>',
+        '<a class="demo-chip" href="/" style="text-decoration:none">← Volver al sistema</a>',
+        1,
+    )
+    if tutorial_key == "ADMIN":
+        return html
+
+    entry_prefixes = tuple(f"{key}:{{steps:[" for key in TUTORIAL_KEYS)
+    filtered_lines = []
+    for line in html.splitlines(keepends=True):
+        stripped = line.lstrip()
+        if stripped.startswith(entry_prefixes) and not stripped.startswith(
+            f"{tutorial_key}:{{steps:["
+        ):
+            continue
+        filtered_lines.append(line)
+    html = "".join(filtered_lines)
+    html = html.replace(
+        '<section class="card">',
+        '<section class="card" style="display:none" aria-hidden="true">',
+        1,
+    )
+    html = html.replace(
+        "<h1>Aprendé a realizar una carga</h1><p>Elegí tu convenio y avanzá a tu ritmo. Podés volver atrás cuando quieras.</p>",
+        f"<h1>{TUTORIAL_LABELS[tutorial_key]}</h1><p>Recorrido personalizado según tu rol, perfil y convenio activos.</p>",
+        1,
+    )
+    html = html.replace("  </script>", f'    start("{tutorial_key}");\n  </script>', 1)
+    return html
+
+
+def convenios_visibles_para_reglas(
+    assignment: UsuarioRol,
+    usuario: Usuario,
+    db: Session,
+) -> list[str]:
+    role = str(assignment.rol or "").strip().upper()
+    profile = str(assignment.perfil or "").strip().upper()
+    if role in {"ADMIN", "RRHH"}:
+        return list(CONVENIOS_DISPONIBLES)
+    if profile == "JEFE":
+        convenios = db.scalars(
+            select(Usuario.convenio)
+            .join(Usuario.roles)
+            .where(
+                Usuario.status.is_(True),
+                Usuario.convenio.is_not(None),
+                func.upper(UsuarioRol.rol) == role,
+                func.upper(UsuarioRol.perfil) == "USUARIO",
+            )
+            .distinct()
+            .order_by(Usuario.convenio)
+        ).all()
+        return [
+            convenio for convenio in CONVENIOS_DISPONIBLES
+            if convenio in {str(item).strip().upper() for item in convenios}
+        ]
+    convenio = str(usuario.convenio or "").strip().upper()
+    if convenio not in CONVENIOS_DISPONIBLES:
+        raise HTTPException(
+            status_code=422,
+            detail="El usuario activo no tiene un convenio válido para consultar sus reglas.",
+        )
+    return [convenio]
+
+
+def descripcion_concepto_regla(tipo_hora: str) -> dict[str, str]:
+    original = str(tipo_hora or "").strip()
+    normalizado = original.upper().replace("_", " ")
+    if normalizado in {"50", "50%"}:
+        return {
+            "nombre": "Horas extras al 50 %",
+            "categoria": "Horas extras",
+            "descripcion": "Tiempo trabajado fuera de la jornada habitual que se liquida con recargo del 50 %.",
+            "icono": "bi-clock-history",
+        }
+    if normalizado in {"100", "100%"}:
+        return {
+            "nombre": "Horas extras al 100 %",
+            "categoria": "Horas extras",
+            "descripcion": "Tiempo trabajado fuera de la jornada habitual que se liquida con recargo del 100 %.",
+            "icono": "bi-clock-history",
+        }
+    if normalizado == "DIA TRABAJADO":
+        return {
+            "nombre": "Día trabajado completo",
+            "categoria": "Día trabajado",
+            "descripcion": "Representa un franco o feriado trabajado completo. La cantidad registrada es 1 día.",
+            "icono": "bi-calendar-check",
+        }
+    explicaciones = {
+        "COMIDA": ("Comida", "Concepto automático", "Se genera automáticamente según las horas extras acumuladas de la jornada.", "bi-cup-hot"),
+        "MERIENDA": ("Merienda", "Concepto automático", "Se genera automáticamente según las horas extras acumuladas de la jornada.", "bi-cup-straw"),
+        "DOMINGO": ("Domingo trabajado", "Día trabajado", "En SAT representa el trabajo realizado un domingo y se registra con cantidad 1.", "bi-calendar-week"),
+        "HS ARTICULO": ("Horas artículo", "Descanso entre jornadas", "Compensa las horas faltantes para completar el descanso obligatorio entre jornadas.", "bi-moon-stars"),
+    }
+    if normalizado in explicaciones:
+        nombre, categoria, descripcion, icono = explicaciones[normalizado]
+        return {
+            "nombre": nombre,
+            "categoria": categoria,
+            "descripcion": descripcion,
+            "icono": icono,
+        }
+    return {
+        "nombre": original,
+        "categoria": "Concepto adicional",
+        "descripcion": "Concepto habilitado por la configuración del convenio. Revisá su observación para conocer el uso previsto.",
+        "icono": "bi-plus-circle",
+    }
 
 
 def usuarios_habilitados_para_carga(
@@ -795,6 +977,10 @@ def cambiar_asignacion(
 @app.get("/", response_class=HTMLResponse)
 def inicio(request: Request, db: Session = Depends(get_db)):
     assignment = obtener_asignacion_activa(request, db)
+    usuario = db.get(Usuario, assignment.usuario_id)
+    if usuario is None:
+        raise HTTPException(status_code=403, detail="El usuario activo no existe.")
+    tutorial_key = tutorial_key_for_assignment(assignment, usuario)
     pendientes = db.scalar(
         select(func.count(HoraExtra.id)).where(
             HoraExtra.usuario_id == assignment.usuario_id,
@@ -826,6 +1012,66 @@ def inicio(request: Request, db: Session = Depends(get_db)):
         "rol_activo": assignment.rol,
         "cargas_pendientes": pendientes,
         "autorizaciones_pendientes": autorizaciones_pendientes,
+        "tutorial_label": TUTORIAL_LABELS[tutorial_key],
+        "reglas_help_label": (
+            "Conocé las reglas de tu convenio"
+            if tutorial_key in CONVENIOS_DISPONIBLES
+            else "Consultá las reglas por convenio"
+        ),
+    })
+
+
+@app.get("/ayuda/tutorial", response_class=HTMLResponse)
+def tutorial_interactivo(request: Request, db: Session = Depends(get_db)):
+    assignment = obtener_asignacion_activa(request, db)
+    usuario = db.get(Usuario, assignment.usuario_id)
+    if usuario is None or not usuario.status:
+        raise HTTPException(status_code=403, detail="El usuario activo no está habilitado.")
+    tutorial_key = tutorial_key_for_assignment(assignment, usuario)
+    return HTMLResponse(
+        content=tutorial_html_for_key(tutorial_key),
+        headers={"Cache-Control": "private, no-store"},
+    )
+
+
+@app.get("/ayuda/reglas", response_class=HTMLResponse)
+def reglas_interactivas(request: Request, db: Session = Depends(get_db)):
+    assignment = obtener_asignacion_activa(request, db)
+    usuario = db.get(Usuario, assignment.usuario_id)
+    if usuario is None or not usuario.status:
+        raise HTTPException(status_code=403, detail="El usuario activo no está habilitado.")
+    convenios = convenios_visibles_para_reglas(assignment, usuario, db)
+    reglas = list(db.scalars(
+        select(ReglaHora)
+        .where(func.upper(ReglaHora.convenio).in_(convenios))
+        .order_by(ReglaHora.convenio, ReglaHora.tipo_dia, ReglaHora.tipo_hora)
+    )) if convenios else []
+    reglas_por_convenio = {convenio: [] for convenio in convenios}
+    for regla in reglas:
+        convenio = str(regla.convenio or "").strip().upper()
+        if convenio not in reglas_por_convenio:
+            continue
+        concepto = descripcion_concepto_regla(regla.tipo_hora)
+        reglas_por_convenio[convenio].append({
+            "tipo_dia": str(regla.tipo_dia or "").strip().upper().replace("Á", "A"),
+            "tipo_hora": str(regla.tipo_hora or "").strip(),
+            "nombre": concepto["nombre"],
+            "categoria": concepto["categoria"],
+            "descripcion": concepto["descripcion"],
+            "icono": concepto["icono"],
+            "nocturna_desde": regla.hora_nocturna_desde.strftime("%H:%M") if regla.hora_nocturna_desde else None,
+            "nocturna_hasta": regla.hora_nocturna_hasta.strftime("%H:%M") if regla.hora_nocturna_hasta else None,
+            "permite_reintegro": bool(regla.permite_reintegro),
+            "observaciones": regla.observaciones,
+        })
+    return templates.TemplateResponse(request, "reglas_interactivas.html", {
+        "active_page": "reglas_interactivas",
+        "convenios": convenios,
+        "reglas_por_convenio": reglas_por_convenio,
+        "reglas_generales": {
+            convenio: REGLAS_GENERALES_CONVENIO.get(convenio, [])
+            for convenio in convenios
+        },
     })
 
 

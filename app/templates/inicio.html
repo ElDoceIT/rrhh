@@ -13,6 +13,8 @@
     <a class="ui-btn primary-btn start-button" href="/solicitudes/nueva?destino=propio"><i class="bi bi-plus-lg"></i> Cargar horas</a>
     {% endif %}
     <div class="start-history">
+      <a class="pending-card pending-card-link tutorial-card" href="/ayuda/tutorial"><span class="pending-card-count"><i class="bi bi-play-fill"></i></span><span><strong>{{ tutorial_label }}</strong><small>Recorrido interactivo paso a paso según tu acceso actual.</small></span><i class="bi bi-chevron-right"></i></a>
+      <a class="pending-card pending-card-link rules-help-card" href="/ayuda/reglas"><span class="pending-card-count"><i class="bi bi-journal-check"></i></span><span><strong>{{ reglas_help_label }}</strong><small>Consultá conceptos, tipos de día y casos especiales sin guardar una carga.</small></span><i class="bi bi-chevron-right"></i></a>
       {% if not es_jefe %}
       <a class="pending-card pending-card-link" href="/horas?estado=PENDIENTE"><span class="pending-card-count">{{ cargas_pendientes }}</span><span><strong>cargas tuyas pendientes</strong><small>Solicitudes propias que todavía no fueron resueltas.</small></span><i class="bi bi-chevron-right"></i></a>
       {% endif %}

@@ -2,7 +2,7 @@
 {% block title %}Horas cargadas{% endblock %}
 {% block content %}
 <div class="container">
-  <header class="page-header"><div><span class="eyebrow">Mi actividad</span><h1>Historial de cargas</h1><p>Tus horas extras y solicitudes de reintegro.</p></div>{% if not es_jefe %}<a class="ui-btn primary-btn" href="/"><i class="bi bi-plus-lg"></i> Nueva carga</a>{% endif %}</header>
+  <header class="page-header"><div><span class="eyebrow">Mi actividad</span><h1>Historial de cargas</h1><p>Tus horas extras y solicitudes de reintegro.</p></div>{% if not es_jefe %}<a class="ui-btn primary-btn" href="/solicitudes/nueva?destino=propio"><i class="bi bi-plus-lg"></i> Nueva carga</a>{% endif %}</header>
   {% if guardado %}<div class="alert success"><i class="bi bi-check-circle-fill"></i> Se procesaron {{ guardado }} {{ 'carga' if guardado == 1 else 'cargas' }} correctamente.</div>{% endif %}
   {% if error %}<div class="alert error"><i class="bi bi-exclamation-triangle-fill"></i> {{ error }}</div>{% endif %}
 
@@ -29,7 +29,7 @@
         <td data-label="Observaciones" class="observations"><span>{{ hora.observaciones or '—' }}</span>{% if hora.observacion_rechazo %}<span class="rejection-detail"><strong>Rechazo:</strong> {{ hora.observacion_rechazo }}</span>{% endif %}</td>
         <td data-label="Acciones" class="actions-column">{% set derivado = hora.tipo_registro == 'OTRAS' and (hora.tipo_hora|upper in ['COMIDA', 'MERIENDA'] or (hora.tipo_hora|upper == 'DOMINGO' and hora.hora_inicio is none)) %}{% if not es_jefe and hora.estado == 'PENDIENTE' and not derivado %}{% if hora.tipo_registro not in ['OTRAS', 'EXCEPCIONAL'] %}<a class="ui-btn icon-btn edit-btn" href="/horas/{{ hora.id }}/editar" aria-label="Editar carga" title="Editar"><i class="bi bi-pencil"></i></a>{% endif %}<form method="post" action="/horas/{{ hora.id }}/eliminar" class="inline-form" onsubmit="return confirm('¿Eliminar esta carga pendiente?');"><button class="ui-btn icon-btn danger-btn" type="submit" aria-label="Eliminar carga" title="Eliminar"><i class="bi bi-trash"></i></button></form>{% else %}—{% endif %}</td>
       </tr>{% endfor %}</tbody>
-    </table></div>{% else %}<div class="empty-state"><i class="bi bi-clock-history"></i><strong>No hay horas para este filtro</strong><span>{{ 'Modificá los filtros seleccionados.' if es_jefe else 'Cargá una nueva solicitud o modificá los filtros seleccionados.' }}</span>{% if not es_jefe %}<a class="ui-btn primary-btn" href="/solicitudes/nueva"><i class="bi bi-plus-lg"></i> Cargar horas</a>{% endif %}</div>{% endif %}
+    </table></div>{% else %}<div class="empty-state"><i class="bi bi-clock-history"></i><strong>No hay horas para este filtro</strong><span>{{ 'Modificá los filtros seleccionados.' if es_jefe else 'Cargá una nueva solicitud o modificá los filtros seleccionados.' }}</span>{% if not es_jefe %}<a class="ui-btn primary-btn" href="/solicitudes/nueva?destino=propio"><i class="bi bi-plus-lg"></i> Cargar horas</a>{% endif %}</div>{% endif %}
   </section>
 </div>
 {% endblock %}

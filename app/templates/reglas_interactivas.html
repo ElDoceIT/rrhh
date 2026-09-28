@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}Reglas de convenio{% endblock %}
+{% block content %}
+<div class="container rules-guide">
+  <header class="page-header rules-guide-header">
+    <div><span class="eyebrow">Guía interactiva</span><h1>{{ 'Consultá las reglas por convenio' if convenios|length > 1 else 'Conocé las reglas de tu convenio' }}</h1><p>Consultá qué conceptos están habilitados y cómo se interpreta cada tipo de día. Esta pantalla no guarda cargas.</p></div>
+    <a class="ui-btn" href="/"><i class="bi bi-arrow-left"></i> Volver al inicio</a>
+  </header>
+
+  {% if convenios %}
+  {% if convenios|length > 1 %}
+  <section class="card rules-selector-card">
+    <div class="section-heading section-heading-pill"><h2>Elegí un convenio</h2></div>
+    <div class="rules-convention-tabs" role="tablist">
+      {% for convenio in convenios %}<button class="rules-convention-button{% if loop.first %} active{% endif %}" type="button" data-convention="{{ convenio }}">{{ convenio }}</button>{% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
+  {% for convenio in convenios %}
+  <section class="rules-convention-panel{% if loop.first %} active{% endif %}" data-convention-panel="{{ convenio }}">
+    <section class="card rules-overview">
+      <div><span class="eyebrow">Convenio vigente</span><h2>{{ convenio }}</h2><p>La información combina los parámetros actualmente cargados y las reglas generales del sistema.</p></div>
+      <span class="status-chip info-chip"><i class="bi bi-database-check"></i> {{ reglas_por_convenio[convenio]|length }} reglas configuradas</span>
+    </section>
+
+    <section class="card rules-step-card">
+      <div class="rules-step-tabs" role="tablist" aria-label="Secciones de la guía">
+        <button class="rules-step-button active" type="button" data-step="conceptos"><span>1</span> Qué podés cargar</button>
+        <button class="rules-step-button" type="button" data-step="especiales"><span>2</span> Casos especiales</button>
+      </div>
+
+      <div class="rules-step-panel active" data-step-panel="conceptos">
+        <div class="section-heading section-heading-pill"><div><span class="section-kicker">Paso 1</span><h2>Conceptos configurados</h2></div></div>
+        <div class="rules-reading-guide">
+          <article><span class="rules-guide-icon"><i class="bi bi-clock-history"></i></span><div><strong>Horas extras</strong><small>Se expresan en horas y pueden liquidarse al 50 % o al 100 %.</small></div></article>
+          <article><span class="rules-guide-icon day"><i class="bi bi-calendar-check"></i></span><div><strong>Día trabajado completo</strong><small>Representa 1 franco o feriado trabajado; su cantidad es 1 día, no una cantidad de horas.</small></div></article>
+          <article><span class="rules-guide-icon extra"><i class="bi bi-plus-circle"></i></span><div><strong>Conceptos adicionales</strong><small>Pueden ser automáticos o requerir una cantidad, según su configuración.</small></div></article>
+        </div>
+        {% if reglas_por_convenio[convenio] %}
+        <div class="rules-concepts-grid">
+          {% for regla in reglas_por_convenio[convenio] %}
+          <article class="rule-concept-card">
+            <span class="rule-day-chip">{{ regla.tipo_dia }}</span>
+            <span class="rule-concept-icon"><i class="bi {{ regla.icono }}"></i></span>
+            <span class="rule-category">{{ regla.categoria }}</span>
+            <h3>{{ regla.nombre }}</h3>
+            <p class="rule-main-description">{{ regla.descripcion }}</p>
+            {% if regla.nocturna_desde and regla.nocturna_hasta %}<p><i class="bi bi-moon-stars"></i> Calcula nocturnidad de {{ regla.nocturna_desde }} a {{ regla.nocturna_hasta }}.</p>{% endif %}
+            <p><i class="bi {{ 'bi-arrow-repeat' if regla.permite_reintegro else 'bi-dash-circle' }}"></i> {{ 'Permite solicitar reintegro cuando el día también lo permite.' if regla.permite_reintegro else 'No habilita reintegro.' }}</p>
+            {% if regla.observaciones %}<p class="rule-observation">{{ regla.observaciones }}</p>{% endif %}
+          </article>
+          {% endfor %}
+        </div>
+        {% else %}<div class="empty-state"><i class="bi bi-sliders"></i><strong>No hay reglas configuradas</strong><span>Consultá con RRHH antes de intentar una carga.</span></div>{% endif %}
+      </div>
+
+      <div class="rules-step-panel" data-step-panel="especiales">
+        <div class="section-heading section-heading-pill"><div><span class="section-kicker">Paso 2</span><h2>Casos especiales de {{ convenio }}</h2></div></div>
+        {% if reglas_generales[convenio] %}<div class="rules-special-list">
+          {% for texto in reglas_generales[convenio] %}<article><span>{{ loop.index }}</span><p>{{ texto }}</p></article>{% endfor %}
+        </div>{% else %}<div class="empty-state"><strong>No hay casos especiales documentados</strong></div>{% endif %}
+        <div class="rules-example-box"><i class="bi bi-lightbulb"></i><div><strong>¿Querés probar una carga real?</strong><span>Volvé al inicio y usá Nueva carga. Este recorrido solamente explica las reglas y nunca guarda información.</span></div></div>
+      </div>
+    </section>
+  </section>
+  {% endfor %}
+  {% else %}
+  <section class="card empty-state"><i class="bi bi-people"></i><strong>No hay convenios para mostrar</strong><span>Tu rol no tiene usuarios activos con convenio asignado.</span></section>
+  {% endif %}
+</div>
+
+<script>
+  document.querySelectorAll(".rules-convention-button").forEach(button=>button.addEventListener("click",()=>{
+    document.querySelectorAll(".rules-convention-button").forEach(item=>item.classList.toggle("active",item===button));
+    document.querySelectorAll(".rules-convention-panel").forEach(panel=>panel.classList.toggle("active",panel.dataset.conventionPanel===button.dataset.convention));
+  }));
+  document.querySelectorAll(".rules-convention-panel").forEach(convention=>{
+    convention.querySelectorAll(".rules-step-button").forEach(button=>button.addEventListener("click",()=>{
+      convention.querySelectorAll(".rules-step-button").forEach(item=>item.classList.toggle("active",item===button));
+      convention.querySelectorAll(".rules-step-panel").forEach(panel=>panel.classList.toggle("active",panel.dataset.stepPanel===button.dataset.step));
+    }));
+  });
+</script>
+{% endblock %}
