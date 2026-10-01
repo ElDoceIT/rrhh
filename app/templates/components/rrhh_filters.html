@@ -13,13 +13,19 @@
 </div>
 {%- endmacro %}
 
-{% macro rrhh_filters(fecha_desde, fecha_hasta, tipos_contratacion, contrataciones_seleccionadas, convenios, convenios_seleccionados) -%}
+{% macro rrhh_filters(fecha_desde, fecha_hasta, tipos_contratacion, contrataciones_seleccionadas, convenios, convenios_seleccionados, usuarios=None, usuario_id=None, usar_checks=false) -%}
 <form method="get" class="rrhh-filters">
   <input type="hidden" name="periodo" value="manual">
   <label class="field"><span>Fecha desde</span><input type="date" name="fecha_desde" value="{{ fecha_desde.isoformat() if fecha_desde else '' }}"></label>
   <label class="field"><span>Fecha hasta</span><input type="date" name="fecha_hasta" value="{{ fecha_hasta.isoformat() if fecha_hasta else '' }}"></label>
+  {% if usuarios is not none %}<label class="field"><span>Usuario</span><select name="usuario_id"><option value="">Todos los usuarios</option>{% for usuario in usuarios %}<option value="{{ usuario.id }}" {% if usuario.id == usuario_id %}selected{% endif %}>{{ usuario.apellido }}, {{ usuario.nombre }}{% if usuario.legajo %} · {{ usuario.legajo }}{% endif %}</option>{% endfor %}</select></label>{% endif %}
+  {% if usar_checks %}
+  <div class="field"><span>Tipo de contratación</span><details class="multi-check-dropdown" data-multi-check><summary data-multi-check-summary data-empty-label="Todas las contrataciones">Todas las contrataciones</summary><div class="multi-check-options">{% for tipo in tipos_contratacion %}<label><input type="checkbox" name="contratacion" value="{{ tipo.id_tipo_contratacion }}" {% if tipo.id_tipo_contratacion in contrataciones_seleccionadas %}checked{% endif %}><span>{{ tipo.contratacion }}</span></label>{% endfor %}</div></details><small>Podés marcar más de una opción.</small></div>
+  <div class="field"><span>Convenio</span><details class="multi-check-dropdown" data-multi-check><summary data-multi-check-summary data-empty-label="Todos los convenios">Todos los convenios</summary><div class="multi-check-options">{% for convenio in convenios %}<label><input type="checkbox" name="convenio" value="{{ convenio }}" {% if convenio in convenios_seleccionados %}checked{% endif %}><span>{{ convenio }}</span></label>{% endfor %}</div></details><small>Podés marcar más de una opción.</small></div>
+  {% else %}
   <label class="field"><span>Tipo de contratación</span><select name="contratacion" multiple size="4">{% for tipo in tipos_contratacion %}<option value="{{ tipo.id_tipo_contratacion }}" {% if tipo.id_tipo_contratacion in contrataciones_seleccionadas %}selected{% endif %}>{{ tipo.contratacion }}</option>{% endfor %}</select><small>Podés seleccionar más de una opción.</small></label>
   <label class="field"><span>Convenio</span><select name="convenio" multiple size="4">{% for convenio in convenios %}<option value="{{ convenio }}" {% if convenio in convenios_seleccionados %}selected{% endif %}>{{ convenio }}</option>{% endfor %}</select><small>Podés seleccionar más de una opción.</small></label>
+  {% endif %}
   <div class="form-actions rrhh-filter-actions"><button class="ui-btn primary-btn" type="submit"><i class="bi bi-funnel"></i> Aplicar filtros</button><a class="ui-btn" href="{{ request.url.path }}"><i class="bi bi-x-lg"></i> Limpiar</a></div>
 </form>
 {%- endmacro %}
