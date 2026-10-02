@@ -497,7 +497,7 @@ document.querySelectorAll(".request-form").forEach((form) => {
       workedSummary.innerHTML = `
         <span><i class="bi bi-calendar-check"></i> ${dayLabel}</span>
         <span><i class="bi bi-clock"></i> Horario informado: ${totalHours.toLocaleString("es-AR")} h</span>
-        ${convenio === "FC" ? "" : '<span><i class="bi bi-moon-stars"></i> Las horas nocturnas se calcularán según el convenio</span>'}
+        ${convenio === "SAT" ? '<span><i class="bi bi-moon-stars"></i> Las horas nocturnas se calcularán automáticamente</span>' : ""}
         ${shortWorkedDay && convenio === "SAT" ? '<span><i class="bi bi-cup-hot"></i> Comida y merienda se calcularán sobre estas horas extras</span>' : ""}
         ${touchesSunday ? '<span><i class="bi bi-calendar-week"></i> Domingo trabajado SAT</span>' : ""}`;
     }
