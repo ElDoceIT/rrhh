@@ -3,6 +3,7 @@ import mimetypes
 import os
 import secrets
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
@@ -809,6 +810,45 @@ def calcular_carga_codificada(datos, db: Session):
         usuario_id, fecha, hora_inicio, hora_fin, db,
         marcar_como_franco=marcar_como_franco,
     )
+
+
+def intervalo_resultado(resultado) -> tuple[datetime, datetime] | None:
+    if resultado.hora_inicio is None or resultado.hora_fin is None:
+        return None
+    inicio = datetime.combine(resultado.fecha, resultado.hora_inicio)
+    fin = datetime.combine(resultado.fecha, resultado.hora_fin)
+    if fin <= inicio:
+        fin += timedelta(days=1)
+    return inicio, fin
+
+
+def evitar_nocturnidad_duplicada_en_jornada(resultados: list) -> None:
+    """Deja la nocturnidad en la jornada completa, no en sus horas extra incluidas."""
+    jornadas_por_usuario: dict[int, list[tuple[datetime, datetime]]] = {}
+    for resultado in resultados:
+        es_domingo = (
+            resultado.tipo_registro == "OTRAS"
+            and str(resultado.tipo_hora or "").strip().upper() == "DOMINGO"
+        )
+        if resultado.tipo_registro != "DIA_TRABAJADO" and not es_domingo:
+            continue
+        intervalo = intervalo_resultado(resultado)
+        if intervalo is not None:
+            jornadas_por_usuario.setdefault(resultado.usuario_id, []).append(intervalo)
+
+    for indice, resultado in enumerate(resultados):
+        if resultado.tipo_registro != "HORAS":
+            continue
+        intervalo_horas = intervalo_resultado(resultado)
+        if intervalo_horas is None:
+            continue
+        inicio_horas, fin_horas = intervalo_horas
+        if any(
+            inicio_jornada <= inicio_horas and fin_horas <= fin_jornada
+            for inicio_jornada, fin_jornada
+            in jornadas_por_usuario.get(resultado.usuario_id, [])
+        ):
+            resultados[indice] = replace(resultado, horas_nocturnas=None)
 
 
 def periodo_corte(fecha_referencia: date) -> tuple[date, date]:
@@ -2118,6 +2158,7 @@ def procesar_solicitud(
 
         nuevos_resultados = [item[0] for item in nuevos_items]
         resultados.extend(nuevos_resultados)
+        evitar_nocturnidad_duplicada_en_jornada(resultados)
         observaciones_nuevas = [
             item[6] if len(item) > 6 else observacion_limpia
             for item in nuevos_items
@@ -2238,6 +2279,8 @@ def confirmar_solicitud(
                     raise CalculoHorasError(
                         f"Ya existe un {concepto} para esa fecha."
                     )
+
+        evitar_nocturnidad_duplicada_en_jornada(resultados_confirmacion)
 
         fecha_carga = datetime.now()
         registros_horas_creados: list[HoraExtra] = []

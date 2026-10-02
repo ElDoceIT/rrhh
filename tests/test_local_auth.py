@@ -28,6 +28,7 @@ from app.services.local_auth import (
 )
 from app.services.calculo_horas import (
     CalculoHorasError,
+    ResultadoHorasExtra,
     calcular_horas_totales,
     calcular_resultado_concepto_excepcional,
     calcular_resultado_dia_trabajado,
@@ -50,6 +51,7 @@ from app.main import (
     descripcion_concepto_regla,
     encode_carga,
     eliminar_regla,
+    evitar_nocturnidad_duplicada_en_jornada,
     expandir_ids_con_jornadas_pendientes,
     filas_exportacion_rrhh,
     ids_habilitados_para_confirmar,
@@ -1343,6 +1345,43 @@ class ReintegroTests(unittest.TestCase):
             dividir_carga_en_fechas(
                 date(2026, 8, 6), time(0, 0), time(0, 0)
             )
+
+    def test_nocturnidad_no_se_duplica_entre_dia_trabajado_y_horas_incluidas(self):
+        base = {
+            "usuario_id": 1,
+            "usuario_nombre": "Prueba, Usuario",
+            "legajo": "1",
+            "convenio": "SAT",
+            "fecha": date(2026, 9, 30),
+            "tipo_dia": "FRANCO",
+            "tipo_hora": None,
+            "permite_reintegro": True,
+            "regla_id": None,
+        }
+        dia = ResultadoHorasExtra(
+            **base, hora_inicio=time(7), hora_fin=time(23, 30),
+            horas_totales=Decimal("16.50"),
+            horas_nocturnas=Decimal("2.50"), tipo_registro="DIA_TRABAJADO",
+        )
+        extra_incluida = ResultadoHorasExtra(
+            **{**base, "tipo_hora": "100"},
+            hora_inicio=time(15), hora_fin=time(23, 30),
+            horas_totales=Decimal("8.50"),
+            horas_nocturnas=Decimal("2.50"), tipo_registro="HORAS",
+        )
+        extra_independiente = ResultadoHorasExtra(
+            **{**base, "fecha": date(2026, 10, 1), "tipo_hora": "50"},
+            hora_inicio=time(21), hora_fin=time(23, 30),
+            horas_totales=Decimal("2.50"),
+            horas_nocturnas=Decimal("2.50"), tipo_registro="HORAS",
+        )
+        resultados = [dia, extra_incluida, extra_independiente]
+
+        evitar_nocturnidad_duplicada_en_jornada(resultados)
+
+        self.assertEqual(resultados[0].horas_nocturnas, Decimal("2.50"))
+        self.assertIsNone(resultados[1].horas_nocturnas)
+        self.assertEqual(resultados[2].horas_nocturnas, Decimal("2.50"))
 
 
 if __name__ == "__main__":
