@@ -16,6 +16,28 @@ themeButton?.addEventListener("click", () => {
 
 updateThemeIcon();
 
+document.querySelectorAll("[data-multi-check]").forEach((dropdown) => {
+  const summary = dropdown.querySelector("[data-multi-check-summary]");
+  const inputs = Array.from(dropdown.querySelectorAll('input[type="checkbox"]'));
+  const updateSummary = () => {
+    const checked = inputs.filter((input) => input.checked);
+    if (!summary) return;
+    summary.textContent = checked.length === 0
+      ? summary.dataset.emptyLabel
+      : checked.length === 1
+        ? checked[0].nextElementSibling?.textContent.trim()
+        : `${checked.length} opciones seleccionadas`;
+  };
+  inputs.forEach((input) => input.addEventListener("change", updateSummary));
+  updateSummary();
+});
+
+document.addEventListener("click", (event) => {
+  document.querySelectorAll("[data-multi-check][open]").forEach((dropdown) => {
+    if (!dropdown.contains(event.target)) dropdown.removeAttribute("open");
+  });
+});
+
 const addRequestPanel = document.querySelector("#add-request-panel");
 document.querySelector("#show-add-request")?.addEventListener("click", () => {
   addRequestPanel?.classList.remove("hidden");
@@ -149,6 +171,27 @@ document.querySelectorAll(".select-user-hours").forEach((control) => {
   });
 });
 hourCheckboxes.forEach((item) => item.addEventListener("change", updateAuthorizationSelection));
+
+const authorizationGroups = [...document.querySelectorAll("[data-authorization-group]")];
+function setAuthorizationGroupExpanded(group, expanded) {
+  group.classList.toggle("is-collapsed", !expanded);
+  const button = group.querySelector(".authorization-group-toggle");
+  if (button) {
+    button.setAttribute("aria-expanded", String(expanded));
+    button.setAttribute("aria-label", `${expanded ? "Comprimir" : "Desplegar"} cargas del usuario`);
+  }
+}
+authorizationGroups.forEach((group) => {
+  group.querySelector(".authorization-group-toggle")?.addEventListener("click", () => {
+    setAuthorizationGroupExpanded(group, group.classList.contains("is-collapsed"));
+  });
+});
+document.querySelector("#expand-all-users")?.addEventListener("click", () => {
+  authorizationGroups.forEach((group) => setAuthorizationGroupExpanded(group, true));
+});
+document.querySelector("#collapse-all-users")?.addEventListener("click", () => {
+  authorizationGroups.forEach((group) => setAuthorizationGroupExpanded(group, false));
+});
 
 function syncTimeSelectFromHidden(input) {
   const control = input?.closest("[data-time-select]");
@@ -454,7 +497,7 @@ document.querySelectorAll(".request-form").forEach((form) => {
       workedSummary.innerHTML = `
         <span><i class="bi bi-calendar-check"></i> ${dayLabel}</span>
         <span><i class="bi bi-clock"></i> Horario informado: ${totalHours.toLocaleString("es-AR")} h</span>
-        ${convenio === "FC" ? "" : '<span><i class="bi bi-moon-stars"></i> Las horas nocturnas se calcularán según el convenio</span>'}
+        ${convenio === "SAT" ? '<span><i class="bi bi-moon-stars"></i> Las horas nocturnas se calcularán automáticamente</span>' : ""}
         ${shortWorkedDay && convenio === "SAT" ? '<span><i class="bi bi-cup-hot"></i> Comida y merienda se calcularán sobre estas horas extras</span>' : ""}
         ${touchesSunday ? '<span><i class="bi bi-calendar-week"></i> Domingo trabajado SAT</span>' : ""}`;
     }

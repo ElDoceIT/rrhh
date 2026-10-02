@@ -3,6 +3,7 @@ import mimetypes
 import os
 import secrets
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
@@ -61,7 +62,7 @@ app = FastAPI(title="Horas extras", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 templates = Jinja2Templates(directory="app/templates")
 
-TUTORIAL_HTML_PATH = Path(__file__).resolve().parent.parent / "docs" / "index.html"
+TUTORIAL_HTML_PATH = Path(__file__).resolve().parent / "resources" / "tutorial" / "index.html"
 TUTORIAL_KEYS = ("CISPREN", "SAL", "SAT", "FC", "MONOTRIBUTISTA", "JEFATURA", "RRHH")
 TUTORIAL_LABELS = {
     "ADMIN": "Abrir tutorial completo",
@@ -811,6 +812,45 @@ def calcular_carga_codificada(datos, db: Session):
     )
 
 
+def intervalo_resultado(resultado) -> tuple[datetime, datetime] | None:
+    if resultado.hora_inicio is None or resultado.hora_fin is None:
+        return None
+    inicio = datetime.combine(resultado.fecha, resultado.hora_inicio)
+    fin = datetime.combine(resultado.fecha, resultado.hora_fin)
+    if fin <= inicio:
+        fin += timedelta(days=1)
+    return inicio, fin
+
+
+def evitar_nocturnidad_duplicada_en_jornada(resultados: list) -> None:
+    """Deja la nocturnidad en la jornada completa, no en sus horas extra incluidas."""
+    jornadas_por_usuario: dict[int, list[tuple[datetime, datetime]]] = {}
+    for resultado in resultados:
+        es_domingo = (
+            resultado.tipo_registro == "OTRAS"
+            and str(resultado.tipo_hora or "").strip().upper() == "DOMINGO"
+        )
+        if resultado.tipo_registro != "DIA_TRABAJADO" and not es_domingo:
+            continue
+        intervalo = intervalo_resultado(resultado)
+        if intervalo is not None:
+            jornadas_por_usuario.setdefault(resultado.usuario_id, []).append(intervalo)
+
+    for indice, resultado in enumerate(resultados):
+        if resultado.tipo_registro != "HORAS":
+            continue
+        intervalo_horas = intervalo_resultado(resultado)
+        if intervalo_horas is None:
+            continue
+        inicio_horas, fin_horas = intervalo_horas
+        if any(
+            inicio_jornada <= inicio_horas and fin_horas <= fin_jornada
+            for inicio_jornada, fin_jornada
+            in jornadas_por_usuario.get(resultado.usuario_id, [])
+        ):
+            resultados[indice] = replace(resultado, horas_nocturnas=None)
+
+
 def periodo_corte(fecha_referencia: date) -> tuple[date, date]:
     corte_actual = date(fecha_referencia.year, fecha_referencia.month, 20)
     if fecha_referencia.day > 20:
@@ -1294,6 +1334,7 @@ def aplicar_filtros_rrhh(
     fecha_hasta: date | None,
     contrataciones: list[int],
     convenios: list[str],
+    usuario_id: int | None = None,
 ):
     if fecha_desde:
         consulta = consulta.where(HoraExtra.fecha >= fecha_desde)
@@ -1303,6 +1344,8 @@ def aplicar_filtros_rrhh(
         consulta = consulta.where(Usuario.id_tipo_contratacion.in_(contrataciones))
     if convenios:
         consulta = consulta.where(func.upper(Usuario.convenio).in_(convenios))
+    if usuario_id is not None:
+        consulta = consulta.where(HoraExtra.usuario_id == usuario_id)
     return consulta
 
 
@@ -1335,9 +1378,13 @@ def rrhh_horas_extras(
     fecha_hasta: date | None = None,
     contratacion: Annotated[list[int] | None, Query()] = None,
     convenio: Annotated[list[str] | None, Query()] = None,
+    usuario_id: str | None = None,
     periodo: str | None = None,
     db: Session = Depends(get_db),
 ):
+    usuario_id_normalizado = (
+        int(usuario_id) if usuario_id and usuario_id.isdigit() else None
+    )
     asignacion = obtener_asignacion_activa(request, db)
     es_rrhh = asignacion.rol.upper() == "RRHH"
     vista_jefe = asignacion.perfil.upper() == "JEFE" and not es_rrhh
@@ -1365,8 +1412,19 @@ def rrhh_horas_extras(
                 func.upper(UsuarioRol.rol) == asignacion.rol.upper(),
             )
         )
+    consulta_usuarios = select(Usuario)
+    if vista_jefe:
+        consulta_usuarios = consulta_usuarios.where(
+            Usuario.roles.any(
+                func.upper(UsuarioRol.rol) == asignacion.rol.upper(),
+            )
+        )
+    usuarios_filtro = list(db.scalars(
+        consulta_usuarios.order_by(Usuario.apellido, Usuario.nombre)
+    ))
     consulta = aplicar_filtros_rrhh(
         consulta, fecha_desde, fecha_hasta, contrataciones, convenios,
+        usuario_id_normalizado,
     )
     horas = list(db.scalars(consulta))
     grupos_por_usuario: dict[int, dict] = {}
@@ -1377,14 +1435,22 @@ def rrhh_horas_extras(
             "pendientes": 0,
             "autorizadas": 0,
             "rechazadas": 0,
+            "resumen": {},
         })
         grupo["horas"].append(hora)
+        for concepto, cantidad in conceptos_exportables_hora(hora):
+            grupo["resumen"][concepto] = (
+                grupo["resumen"].get(concepto, Decimal("0.00")) + cantidad
+            )
         if hora.estado == "PENDIENTE":
             grupo["pendientes"] += 1
         elif hora.estado == "APROBADA":
             grupo["autorizadas"] += 1
         elif hora.estado == "RECHAZADA":
             grupo["rechazadas"] += 1
+    grupos = list(grupos_por_usuario.values())
+    for grupo in grupos:
+        grupo["resumen_conceptos"] = sorted(grupo.pop("resumen").items())
     contexto = contexto_filtros_rrhh(
         db, fecha_desde, fecha_hasta, contrataciones, convenios,
         periodo_activo, periodos, tipos,
@@ -1392,12 +1458,14 @@ def rrhh_horas_extras(
     contexto.update({
         "active_page": "rrhh_horas",
         "horas": horas,
-        "grupos": list(grupos_por_usuario.values()),
+        "grupos": grupos,
         "pendientes": sum(item.estado == "PENDIENTE" for item in horas),
         "autorizadas": sum(item.estado == "APROBADA" for item in horas),
         "rechazadas": sum(item.estado == "RECHAZADA" for item in horas),
         "vista_jefe": vista_jefe,
         "rol_activo": asignacion.rol,
+        "usuarios_filtro": usuarios_filtro,
+        "usuario_id": usuario_id_normalizado,
     })
     return templates.TemplateResponse(request, "rrhh_horas.html", contexto)
 
@@ -2090,6 +2158,7 @@ def procesar_solicitud(
 
         nuevos_resultados = [item[0] for item in nuevos_items]
         resultados.extend(nuevos_resultados)
+        evitar_nocturnidad_duplicada_en_jornada(resultados)
         observaciones_nuevas = [
             item[6] if len(item) > 6 else observacion_limpia
             for item in nuevos_items
@@ -2210,6 +2279,8 @@ def confirmar_solicitud(
                     raise CalculoHorasError(
                         f"Ya existe un {concepto} para esa fecha."
                     )
+
+        evitar_nocturnidad_duplicada_en_jornada(resultados_confirmacion)
 
         fecha_carga = datetime.now()
         registros_horas_creados: list[HoraExtra] = []
@@ -3337,32 +3408,115 @@ def autorizaciones(
     request: Request,
     guardado: int | None = None,
     rechazado: int | None = None,
+    usuario_id: int | None = None,
     db: Session = Depends(get_db),
 ):
     autorizador, asignacion_activa, es_admin = obtener_autorizador(request, db)
     grupos = []
-    condiciones = [HoraExtra.estado == "PENDIENTE"]
+    condiciones_alcance = []
     if not es_admin:
-        condiciones.extend([
+        condiciones_alcance.extend([
             Usuario.roles.any(func.upper(UsuarioRol.rol) == asignacion_activa.rol.upper()),
         ])
-    pendientes = list(db.scalars(
+    pendientes_accesibles = list(db.scalars(
         select(HoraExtra)
         .join(HoraExtra.usuario)
         .options(selectinload(HoraExtra.usuario).selectinload(Usuario.roles))
-        .where(*condiciones)
+        .where(HoraExtra.estado == "PENDIENTE", *condiciones_alcance)
         .order_by(Usuario.apellido, Usuario.nombre, HoraExtra.fecha, HoraExtra.hora_inicio)
     ))
+    usuarios_filtro = []
+    usuarios_vistos = set()
+    for hora in pendientes_accesibles:
+        if hora.usuario_id not in usuarios_vistos:
+            usuarios_vistos.add(hora.usuario_id)
+            usuarios_filtro.append(hora.usuario)
+    if usuario_id not in usuarios_vistos:
+        usuario_id = None
+    pendientes = [
+        hora for hora in pendientes_accesibles
+        if usuario_id is None or hora.usuario_id == usuario_id
+    ]
     agrupados: dict[int, dict] = {}
     for hora in pendientes:
         grupo = agrupados.setdefault(hora.usuario_id, {
             "usuario": hora.usuario,
             "horas": [],
             "total": Decimal("0.00"),
+            "resumen": {},
         })
         grupo["horas"].append(hora)
         grupo["total"] += hora.horas_totales or Decimal("0.00")
+        if hora.tipo_registro == "EXCEPCIONAL":
+            concepto = hora.concepto_excepcional_nombre or "Concepto excepcional"
+            cantidad = hora.cantidad or Decimal("0.00")
+        elif hora.tipo_registro == "DIA_TRABAJADO":
+            concepto, cantidad = "Día trabajado", Decimal("1.00")
+        elif hora.tipo_registro == "REINTEGRO":
+            concepto, cantidad = "Reintegro", hora.cantidad or Decimal("1.00")
+        elif hora.tipo_registro == "OTRAS":
+            concepto = "Domingo trabajado" if str(hora.tipo_hora or "").upper() == "DOMINGO" else (hora.tipo_hora or "Otras cargas")
+            cantidad = hora.cantidad or Decimal("0.00")
+        else:
+            tipo_hora = str(hora.tipo_hora or "").strip()
+            concepto = f"Horas al {tipo_hora}{'' if '%' in tipo_hora else '%'}" if tipo_hora else "Horas extras"
+            cantidad = hora.horas_totales or Decimal("0.00")
+        grupo["resumen"][concepto] = grupo["resumen"].get(concepto, Decimal("0.00")) + cantidad
+        if hora.horas_nocturnas and hora.horas_nocturnas > 0:
+            grupo["resumen"]["Horas nocturnas"] = grupo["resumen"].get(
+                "Horas nocturnas", Decimal("0.00")
+            ) + hora.horas_nocturnas
     grupos = list(agrupados.values())
+    for grupo in grupos:
+        grupo["resumen_conceptos"] = sorted(grupo.pop("resumen").items())
+
+    # El control autorizado se muestra por el período vigente aplicable a cada
+    # persona: 16–15 para Nómina y mes calendario para Monotributo/Consultora.
+    hoy = date.today()
+    mes_actual = periodos_rapidos_rrhh(hoy)["monotributo"]
+    periodos_por_usuario: dict[int, tuple[date, date]] = {}
+    for grupo in grupos:
+        desde, hasta, _ = limites_fecha_carga_usuario(grupo["usuario"], hoy)
+        periodos_por_usuario[grupo["usuario"].id] = (
+            desde or mes_actual[0],
+            hasta or mes_actual[1],
+        )
+        grupo["autorizadas_periodo"] = 0
+        grupo["detalle_autorizado"] = []
+        grupo["periodo_autorizado"] = periodos_por_usuario[grupo["usuario"].id]
+    if periodos_por_usuario:
+        desde_general = min(periodo[0] for periodo in periodos_por_usuario.values())
+        hasta_general = max(periodo[1] for periodo in periodos_por_usuario.values())
+        autorizadas_periodo = list(db.scalars(
+            select(HoraExtra)
+            .where(
+                HoraExtra.estado == "APROBADA",
+                HoraExtra.usuario_id.in_(list(periodos_por_usuario)),
+                HoraExtra.fecha >= desde_general,
+                HoraExtra.fecha <= hasta_general,
+            )
+        ))
+        grupos_por_id = {grupo["usuario"].id: grupo for grupo in grupos}
+        for hora in autorizadas_periodo:
+            desde, hasta = periodos_por_usuario[hora.usuario_id]
+            if not desde <= hora.fecha <= hasta:
+                continue
+            grupo = grupos_por_id[hora.usuario_id]
+            grupo["autorizadas_periodo"] += 1
+            grupo["detalle_autorizado"].append(hora)
+    for grupo in grupos:
+        grupo["detalle_autorizado"].sort(
+            key=lambda hora: (hora.fecha, hora.id), reverse=True,
+        )
+
+    condiciones_autorizadas = [HoraExtra.estado == "APROBADA", *condiciones_alcance]
+    if usuario_id is not None:
+        condiciones_autorizadas.append(HoraExtra.usuario_id == usuario_id)
+    autorizadas_total = db.scalar(
+        select(func.count(HoraExtra.id))
+        .join(HoraExtra.usuario)
+        .where(*condiciones_autorizadas)
+    ) or 0
 
     return templates.TemplateResponse(request, "autorizaciones.html", {
         "active_page": "autorizaciones",
@@ -3372,6 +3526,9 @@ def autorizaciones(
         "grupos": grupos,
         "guardado": guardado,
         "rechazado": rechazado,
+        "usuarios_filtro": usuarios_filtro,
+        "usuario_id": usuario_id,
+        "autorizadas_total": autorizadas_total,
         "cantidad_pendientes": sum(len(grupo["horas"]) for grupo in grupos),
         "total_pendiente": sum(
             (grupo["total"] for grupo in grupos),
@@ -3384,6 +3541,7 @@ def autorizaciones(
 def aprobar_horas(
     request: Request,
     hora_ids: Annotated[list[int] | None, Form()] = None,
+    filtro_usuario_id: Annotated[int | None, Form()] = None,
     db: Session = Depends(get_db),
 ):
     ids = list(dict.fromkeys(hora_ids or []))
@@ -3412,7 +3570,8 @@ def aprobar_horas(
         db.rollback()
         raise HTTPException(status_code=500, detail="No se pudieron autorizar las horas seleccionadas.") from error
     return RedirectResponse(
-        f"/autorizaciones?guardado={len(horas)}",
+        f"/autorizaciones?guardado={len(horas)}"
+        + (f"&usuario_id={filtro_usuario_id}" if filtro_usuario_id else ""),
         status_code=303,
     )
 
@@ -3436,6 +3595,7 @@ def rechazar_horas(
     hora_ids: Annotated[list[int] | None, Form()] = None,
     fila_ids: Annotated[list[int] | None, Form()] = None,
     observaciones_rechazo: Annotated[list[str] | None, Form()] = None,
+    filtro_usuario_id: Annotated[int | None, Form()] = None,
     db: Session = Depends(get_db),
 ):
     ids = list(dict.fromkeys(hora_ids or []))
@@ -3475,7 +3635,8 @@ def rechazar_horas(
         db.rollback()
         raise HTTPException(status_code=500, detail="No se pudieron rechazar las horas seleccionadas.") from error
     return RedirectResponse(
-        f"/autorizaciones?rechazado={len(horas)}",
+        f"/autorizaciones?rechazado={len(horas)}"
+        + (f"&usuario_id={filtro_usuario_id}" if filtro_usuario_id else ""),
         status_code=303,
     )
 
