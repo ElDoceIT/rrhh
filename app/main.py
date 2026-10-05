@@ -28,6 +28,7 @@ from app.services.access_catalog import CONVENIOS_DISPONIBLES, PERFILES_DISPONIB
 from app.services.calculo_horas import (
     CalculoHorasError,
     calcular_horas_totales,
+    calcular_resultado_nocturnas_en_jornada,
     calcular_resultado_concepto_excepcional,
     calcular_resultado_dia_trabajado,
     calcular_resultado_domingo,
@@ -36,6 +37,8 @@ from app.services.calculo_horas import (
     calcular_resultado_reintegro,
     clasificar_tipo_dia,
     dividir_carga_en_fechas,
+    TIPO_NOCTURNAS_EN_JORNADA,
+    TIPOS_NOCTURNAS_EN_JORNADA,
 )
 from app.services.local_auth import (
     authenticate_local_user,
@@ -74,36 +77,6 @@ TUTORIAL_LABELS = {
     "FC": "Abrir guía de carga FC",
     "MONOTRIBUTISTA": "Abrir guía de carga MONOTRIBUTISTA",
 }
-REGLAS_GENERALES_CONVENIO = {
-    "CISPREN": [
-        "En un franco o feriado, menos de 4 horas se registra como horas al 100%.",
-        "Desde la cuarta hora se registra 1 día trabajado.",
-        "Puede solicitarse medio reintegro, reintegro completo o ninguno cuando el día lo permite.",
-    ],
-    "SAL": [
-        "Las horas extras de un día hábil se clasifican según la regla vigente.",
-        "En un franco o feriado, menos de 4 horas se registra como horas al 100% y desde la cuarta hora como 1 día trabajado.",
-        "El reintegro aparece solamente cuando la regla y el feriado lo permiten.",
-    ],
-    "SAT": [
-        "En un franco o feriado, menos de 4 horas se registra como horas al 100% y desde la cuarta hora como 1 día trabajado.",
-        "Comida y merienda se calculan automáticamente sobre las horas extras de una misma jornada, si existen esas reglas.",
-        "En domingo puede generarse el concepto DOMINGO con cantidad 1 y sin reintegro.",
-        "HS ARTICULO está disponible exclusivamente para SAT.",
-    ],
-    "FC": [
-        "Solamente permite informar un franco o feriado trabajado.",
-        "Siempre se registra 1 día trabajado, sin aplicar el límite de 4 horas.",
-        "No permite horas extras, reintegro, nocturnidad ni otras cargas.",
-    ],
-    "MONOTRIBUTISTA": [
-        "Las horas extras de un día hábil se clasifican automáticamente según la regla vigente.",
-        "Un franco o feriado siempre genera 1 día trabajado, sin aplicar el límite de 4 horas.",
-        "Las horas extras adicionales de ese franco o feriado se registran por separado al 100%.",
-        "No permite solicitar reintegro.",
-    ],
-}
-
 PUBLIC_PATHS = {"/login", "/health", "/health/db", "/health/database"}
 
 
@@ -320,8 +293,8 @@ def descripcion_concepto_regla(tipo_hora: str) -> dict[str, str]:
             "icono": "bi-calendar-check",
         }
     explicaciones = {
-        "COMIDA": ("Comida", "Concepto automático", "Se genera automáticamente según las horas extras acumuladas de la jornada.", "bi-cup-hot"),
-        "MERIENDA": ("Merienda", "Concepto automático", "Se genera automáticamente según las horas extras acumuladas de la jornada.", "bi-cup-straw"),
+        "COMIDA": ("Comida", "Concepto automático", "En SAT se genera una comida cada 3 horas extra acumuladas en la misma jornada.", "bi-cup-hot"),
+        "MERIENDA": ("Merienda", "Concepto automático", "En SAT se genera una merienda cada 2 horas extra acumuladas en la misma jornada.", "bi-cup-straw"),
         "DOMINGO": ("Domingo trabajado", "Día trabajado", "En SAT representa el trabajo realizado un domingo y se registra con cantidad 1.", "bi-calendar-week"),
         "HS ARTICULO": ("Horas artículo", "Descanso entre jornadas", "Compensa las horas faltantes para completar el descanso obligatorio entre jornadas.", "bi-moon-stars"),
     }
@@ -341,6 +314,38 @@ def descripcion_concepto_regla(tipo_hora: str) -> dict[str, str]:
     }
 
 
+def descripcion_tipo_dia(convenio: str, tipo_dia: str) -> tuple[str, str, str]:
+    convenio = convenio.upper()
+    tipo_dia = tipo_dia.upper()
+    if tipo_dia == "HABIL":
+        return (
+            "Día hábil", "bi-briefcase",
+            "Las horas informadas se clasifican con el porcentaje configurado para el convenio.",
+        )
+    if tipo_dia in {"FRANCO", "FERIADO"}:
+        nombre = "Franco trabajado" if tipo_dia == "FRANCO" else "Feriado trabajado"
+        if convenio in {"FC", "MONOTRIBUTISTA"}:
+            detalle = "Genera 1 día trabajado y las horas extra se agregan por separado al 100 %."
+        else:
+            detalle = "El sistema resuelve la carga según la jornada informada y las reglas del convenio."
+        if convenio == "CISPREN":
+            detalle += " Puede solicitar medio reintegro, reintegro completo o ninguno."
+        elif convenio in {"SAL", "SAT"}:
+            detalle += " Puede solicitar reintegro completo cuando la regla y el feriado lo permiten."
+        else:
+            detalle += " No permite solicitar reintegro."
+        return nombre, "bi-calendar-check", detalle
+    if tipo_dia == "DOMINGO":
+        return (
+            "Domingo", "bi-calendar-week",
+            "Para SAT registra 1 domingo trabajado, sin reintegro. Puede calcular nocturnidad si se informa horario.",
+        )
+    return (
+        "Conceptos para cualquier día", "bi-grid",
+        "Conceptos adicionales o automáticos que no dependen de que el día sea hábil, franco o feriado.",
+    )
+
+
 def usuarios_habilitados_para_carga(
     request: Request,
     db: Session,
@@ -356,8 +361,40 @@ def usuarios_habilitados_para_carga(
     current_user = db.get(Usuario, assignment.usuario_id)
     if current_user is None or not current_user.status:
         raise HTTPException(status_code=403, detail="El usuario activo no está habilitado.")
+    if not usuario_tiene_funciones_carga(current_user, db):
+        raise HTTPException(
+            status_code=403,
+            detail="No tenés funciones de carga habilitadas.",
+        )
 
     return assignment, [current_user]
+
+
+CODIGO_PERMISO_CARGAS_FC = "PERMISO_CARGAS_FC"
+
+
+def usuario_tiene_funciones_carga(usuario: Usuario, db: Session) -> bool:
+    convenio = str(usuario.convenio or "").strip().upper()
+    if convenio != "FC":
+        return True
+    hoy = date.today()
+    return db.scalar(
+        select(UsuarioConceptoExcepcional.id_asignacion)
+        .join(ConceptoExcepcional)
+        .where(
+            UsuarioConceptoExcepcional.usuario_id == usuario.id,
+            UsuarioConceptoExcepcional.activo.is_(True),
+            UsuarioConceptoExcepcional.fecha_desde <= hoy,
+            (
+                UsuarioConceptoExcepcional.fecha_hasta.is_(None)
+                | (UsuarioConceptoExcepcional.fecha_hasta >= hoy)
+            ),
+            ConceptoExcepcional.codigo == CODIGO_PERMISO_CARGAS_FC,
+            ConceptoExcepcional.tipo == "PERMISO",
+            ConceptoExcepcional.activo.is_(True),
+        )
+        .limit(1)
+    ) is not None
 
 
 def ids_habilitados_para_confirmar(request: Request, db: Session) -> set[int]:
@@ -365,8 +402,10 @@ def ids_habilitados_para_confirmar(request: Request, db: Session) -> set[int]:
     return {item.id for item in propios}
 
 
-def tipos_otras_cargas(db: Session) -> list[tuple[str, str, str]]:
-    return list(db.execute(
+def tipos_otras_cargas(
+    db: Session, convenio: str | None = None,
+) -> list[tuple[str, str, str]]:
+    consulta = (
         select(ReglaHora.convenio, ReglaHora.tipo_hora, ReglaHora.observaciones)
         .where(
             func.upper(ReglaHora.tipo_dia) == "TODOS",
@@ -374,7 +413,23 @@ def tipos_otras_cargas(db: Session) -> list[tuple[str, str, str]]:
         )
         .distinct()
         .order_by(ReglaHora.convenio, ReglaHora.tipo_hora)
-    ).tuples())
+    )
+    if convenio:
+        consulta = consulta.where(
+            func.upper(ReglaHora.convenio) == convenio.strip().upper(),
+        )
+    return list(db.execute(consulta).tuples())
+
+
+def convenio_permite_reintegro(db: Session, convenio: str | None) -> bool:
+    if not convenio:
+        return False
+    return db.scalar(
+        select(ReglaHora.id).where(
+            func.upper(ReglaHora.convenio) == convenio.strip().upper(),
+            ReglaHora.permite_reintegro.is_(True),
+        ).limit(1)
+    ) is not None
 
 
 def conceptos_excepcionales_habilitados(db: Session, usuario_id: int) -> list[ConceptoExcepcional]:
@@ -384,11 +439,76 @@ def conceptos_excepcionales_habilitados(db: Session, usuario_id: int) -> list[Co
         .where(
             UsuarioConceptoExcepcional.usuario_id == usuario_id,
             UsuarioConceptoExcepcional.activo.is_(True),
+            UsuarioConceptoExcepcional.fecha_desde <= date.today(),
+            (
+                UsuarioConceptoExcepcional.fecha_hasta.is_(None)
+                | (UsuarioConceptoExcepcional.fecha_hasta >= date.today())
+            ),
             ConceptoExcepcional.activo.is_(True),
+            ConceptoExcepcional.tipo == "CARGA_MANUAL",
         )
         .distinct()
         .order_by(ConceptoExcepcional.nombre)
     ))
+
+
+def franja_nocturna_convenio(db: Session, convenio: str | None) -> tuple[time, time] | None:
+    if not convenio:
+        return None
+    franjas = list(db.execute(
+        select(ReglaHora.hora_nocturna_desde, ReglaHora.hora_nocturna_hasta)
+        .where(
+            func.upper(ReglaHora.convenio) == convenio.strip().upper(),
+            ReglaHora.hora_nocturna_desde.is_not(None),
+            ReglaHora.hora_nocturna_hasta.is_not(None),
+        )
+        .distinct()
+        .limit(2)
+    ).tuples())
+    return franjas[0] if len(franjas) == 1 else None
+
+
+def intervalo_jornada(fecha: date, inicio: time, fin: time) -> tuple[datetime, datetime]:
+    desde = datetime.combine(fecha, inicio)
+    hasta = datetime.combine(fecha, fin)
+    if hasta <= desde:
+        hasta += timedelta(days=1)
+    return desde, hasta
+
+
+def validar_nocturnidad_sin_superposicion(
+    usuario_id: int,
+    fecha: date,
+    hora_inicio: time,
+    hora_fin: time,
+    db: Session,
+    resultados_borrador: list | None = None,
+    excluir_hora_id: int | None = None,
+) -> None:
+    desde, hasta = intervalo_jornada(fecha, hora_inicio, hora_fin)
+    candidatos = list(resultados_borrador or [])
+    consulta_existentes = select(HoraExtra).where(
+            HoraExtra.usuario_id == usuario_id,
+            HoraExtra.estado.in_(("PENDIENTE", "APROBADA")),
+            HoraExtra.hora_inicio.is_not(None),
+            HoraExtra.hora_fin.is_not(None),
+            HoraExtra.fecha >= desde.date() - timedelta(days=1),
+            HoraExtra.fecha <= hasta.date(),
+        )
+    if excluir_hora_id is not None:
+        consulta_existentes = consulta_existentes.where(HoraExtra.id != excluir_hora_id)
+    existentes = db.scalars(consulta_existentes)
+    candidatos.extend(existentes)
+    for item in candidatos:
+        if item.hora_inicio is None or item.hora_fin is None:
+            continue
+        item_desde, item_hasta = intervalo_jornada(
+            item.fecha, item.hora_inicio, item.hora_fin,
+        )
+        if desde < item_hasta and item_desde < hasta:
+            raise CalculoHorasError(
+                "El horario nocturno se superpone con otra carga pendiente, autorizada o incluida en este borrador."
+            )
 
 
 def fechas_feriados_sin_devolucion(db: Session) -> list[str]:
@@ -721,6 +841,7 @@ def encode_carga(
     cantidad: Decimal | None = None,
     concepto_excepcional_id: int | None = None,
     concepto_excepcional_nombre: str | None = None,
+    fecha_descanso_compensatorio: date | None = None,
 ) -> str:
     return "|".join((
         str(usuario_id),
@@ -734,19 +855,20 @@ def encode_carga(
         str(cantidad) if cantidad is not None else "",
         str(concepto_excepcional_id) if concepto_excepcional_id is not None else "",
         quote(clean_optional(concepto_excepcional_nombre) or "", safe=""),
+        fecha_descanso_compensatorio.isoformat() if fecha_descanso_compensatorio else "",
     ))
 
 
-def decode_carga(value: str) -> tuple[int, date, time | None, time | None, str | None, str, bool, str | None, Decimal | None, int | None, str | None]:
+def decode_carga(value: str) -> tuple[int, date, time | None, time | None, str | None, str, bool, str | None, Decimal | None, int | None, str | None, date | None]:
     try:
-        partes = value.split("|", maxsplit=10)
+        partes = value.split("|", maxsplit=11)
         if len(partes) == 5:
             partes.append("HORAS")
         if len(partes) == 6:
             partes.append("NO")
-        while len(partes) < 11:
+        while len(partes) < 12:
             partes.append("")
-        usuario_id, fecha, hora_inicio, hora_fin, observaciones, tipo_registro, marcar_franco, tipo_hora, cantidad, concepto_id, concepto_nombre = partes
+        usuario_id, fecha, hora_inicio, hora_fin, observaciones, tipo_registro, marcar_franco, tipo_hora, cantidad, concepto_id, concepto_nombre, fecha_descanso = partes
         tipo_registro = tipo_registro.strip().upper()
         marcar_franco = marcar_franco.strip().upper()
         if tipo_registro not in {"HORAS", "DIA_TRABAJADO", "REINTEGRO", "OTRAS", "EXCEPCIONAL"} or marcar_franco not in {"SI", "NO"}:
@@ -763,19 +885,18 @@ def decode_carga(value: str) -> tuple[int, date, time | None, time | None, str |
             Decimal(cantidad) if cantidad else None,
             int(concepto_id) if concepto_id else None,
             clean_optional(unquote(concepto_nombre)),
+            date.fromisoformat(fecha_descanso) if fecha_descanso else None,
         )
     except (TypeError, ValueError) as error:
         raise CalculoHorasError("La solicitud contiene una carga con formato inválido.") from error
 
 
 def calcular_carga_codificada(datos, db: Session):
-    usuario_id, fecha, hora_inicio, hora_fin, _, tipo_registro, marcar_como_franco, tipo_hora, cantidad, concepto_id, concepto_nombre = datos
+    usuario_id, fecha, hora_inicio, hora_fin, _, tipo_registro, marcar_como_franco, tipo_hora, cantidad, concepto_id, concepto_nombre, _ = datos
     usuario = db.get(Usuario, usuario_id)
     convenio = str(usuario.convenio or "").strip().upper() if usuario else ""
-    if convenio == "FC" and tipo_registro != "DIA_TRABAJADO":
-        raise CalculoHorasError(
-            "FC sólo permite informar un franco o feriado trabajado."
-        )
+    if convenio == "FC" and usuario is not None and not usuario_tiene_funciones_carga(usuario, db):
+        raise CalculoHorasError("El usuario FC no tiene habilitada la excepción de carga.")
     if convenio == "MONOTRIBUTISTA" and tipo_registro == "REINTEGRO":
         raise CalculoHorasError(
             "MONOTRIBUTISTA no permite solicitar reintegro."
@@ -792,6 +913,12 @@ def calcular_carga_codificada(datos, db: Session):
     if tipo_registro == "OTRAS":
         if tipo_hora is None or cantidad is None:
             raise CalculoHorasError("La otra carga no contiene un tipo y una cantidad válidos.")
+        if tipo_hora.strip().upper() in TIPOS_NOCTURNAS_EN_JORNADA:
+            if hora_inicio is None or hora_fin is None:
+                raise CalculoHorasError("La carga nocturna no contiene un horario válido.")
+            return calcular_resultado_nocturnas_en_jornada(
+                usuario_id, fecha, hora_inicio, hora_fin, db,
+            )
         if tipo_hora.strip().upper() == "DOMINGO":
             return calcular_resultado_domingo(
                 usuario_id, fecha, db, hora_inicio=hora_inicio, hora_fin=hora_fin,
@@ -1021,14 +1148,18 @@ def inicio(request: Request, db: Session = Depends(get_db)):
     if usuario is None:
         raise HTTPException(status_code=403, detail="El usuario activo no existe.")
     tutorial_key = tutorial_key_for_assignment(assignment, usuario)
-    pendientes = db.scalar(
+    es_admin = assignment.rol.upper() == "ADMIN"
+    es_jefe = assignment.perfil.upper() == "JEFE"
+    sin_funciones = (
+        assignment.perfil.upper() == "USUARIO"
+        and not usuario_tiene_funciones_carga(usuario, db)
+    )
+    pendientes = 0 if sin_funciones else db.scalar(
         select(func.count(HoraExtra.id)).where(
             HoraExtra.usuario_id == assignment.usuario_id,
             HoraExtra.estado == "PENDIENTE",
         )
     ) or 0
-    es_admin = assignment.rol.upper() == "ADMIN"
-    es_jefe = assignment.perfil.upper() == "JEFE"
     autorizaciones_pendientes = 0
     if es_admin:
         autorizaciones_pendientes = db.scalar(
@@ -1050,6 +1181,7 @@ def inicio(request: Request, db: Session = Depends(get_db)):
         "es_jefe": es_jefe,
         "es_admin": es_admin,
         "rol_activo": assignment.rol,
+        "sin_funciones": sin_funciones,
         "cargas_pendientes": pendientes,
         "autorizaciones_pendientes": autorizaciones_pendientes,
         "tutorial_label": TUTORIAL_LABELS[tutorial_key],
@@ -1086,14 +1218,28 @@ def reglas_interactivas(request: Request, db: Session = Depends(get_db)):
         .where(func.upper(ReglaHora.convenio).in_(convenios))
         .order_by(ReglaHora.convenio, ReglaHora.tipo_dia, ReglaHora.tipo_hora)
     )) if convenios else []
-    reglas_por_convenio = {convenio: [] for convenio in convenios}
+    grupos_por_convenio: dict[str, dict[str, dict]] = {
+        convenio: {} for convenio in convenios
+    }
     for regla in reglas:
         convenio = str(regla.convenio or "").strip().upper()
-        if convenio not in reglas_por_convenio:
+        if convenio not in grupos_por_convenio:
             continue
         concepto = descripcion_concepto_regla(regla.tipo_hora)
-        reglas_por_convenio[convenio].append({
-            "tipo_dia": str(regla.tipo_dia or "").strip().upper().replace("Á", "A"),
+        tipo_dia = str(regla.tipo_dia or "").strip().upper().replace("Á", "A")
+        if convenio == "SAT" and str(regla.tipo_hora or "").strip().upper() == "DOMINGO":
+            tipo_dia = "DOMINGO"
+        nombre_dia, icono_dia, descripcion_dia = descripcion_tipo_dia(
+            convenio, tipo_dia,
+        )
+        grupo = grupos_por_convenio[convenio].setdefault(tipo_dia, {
+            "codigo": tipo_dia,
+            "nombre": nombre_dia,
+            "icono": icono_dia,
+            "descripcion": descripcion_dia,
+            "conceptos": [],
+        })
+        grupo["conceptos"].append({
             "tipo_hora": str(regla.tipo_hora or "").strip(),
             "nombre": concepto["nombre"],
             "categoria": concepto["categoria"],
@@ -1104,12 +1250,55 @@ def reglas_interactivas(request: Request, db: Session = Depends(get_db)):
             "permite_reintegro": bool(regla.permite_reintegro),
             "observaciones": regla.observaciones,
         })
+    for convenio, grupos in grupos_por_convenio.items():
+        for tipo_dia in ("FRANCO", "FERIADO"):
+            if tipo_dia not in grupos:
+                continue
+            grupos[tipo_dia]["conceptos"].insert(0, {
+                "tipo_hora": "DIA_TRABAJADO",
+                "nombre": "Día trabajado completo",
+                "categoria": "Día trabajado",
+                "descripcion": "Se registra con cantidad 1; las horas extra, si corresponden, quedan en otra fila.",
+                "icono": "bi-calendar-check",
+                "nocturna_desde": None,
+                "nocturna_hasta": None,
+                "permite_reintegro": False,
+                "observaciones": None,
+            })
+        franja = franja_nocturna_convenio(db, convenio)
+        if franja:
+            nombre_dia, icono_dia, descripcion_dia = descripcion_tipo_dia(
+                convenio, "TODOS",
+            )
+            grupo_todos = grupos.setdefault("TODOS", {
+                "codigo": "TODOS", "nombre": nombre_dia,
+                "icono": icono_dia, "descripcion": descripcion_dia,
+                "conceptos": [],
+            })
+            grupo_todos["conceptos"].append({
+                "tipo_hora": TIPO_NOCTURNAS_EN_JORNADA,
+                "nombre": "Horas nocturnas dentro de jornada",
+                "categoria": "Adicional nocturno",
+                "descripcion": "Permite informar nocturnidad realizada dentro de la jornada habitual, sin generar horas extra.",
+                "icono": "bi-moon-stars",
+                "nocturna_desde": franja[0].strftime("%H:%M"),
+                "nocturna_hasta": franja[1].strftime("%H:%M"),
+                "permite_reintegro": False,
+                "observaciones": "Puede cargarse por fechas específicas o por un período habitual.",
+            })
+    orden_dias = {"HABIL": 0, "FRANCO": 1, "FERIADO": 2, "DOMINGO": 3, "TODOS": 4}
+    dias_por_convenio = {
+        convenio: sorted(
+            grupos.values(), key=lambda grupo: orden_dias.get(grupo["codigo"], 99),
+        )
+        for convenio, grupos in grupos_por_convenio.items()
+    }
     return templates.TemplateResponse(request, "reglas_interactivas.html", {
         "active_page": "reglas_interactivas",
         "convenios": convenios,
-        "reglas_por_convenio": reglas_por_convenio,
-        "reglas_generales": {
-            convenio: REGLAS_GENERALES_CONVENIO.get(convenio, [])
+        "dias_por_convenio": dias_por_convenio,
+        "cantidad_reglas": {
+            convenio: len([regla for regla in reglas if str(regla.convenio).strip().upper() == convenio])
             for convenio in convenios
         },
     })
@@ -1139,6 +1328,12 @@ def home(
         .options(selectinload(Usuario.tipo_contratacion))
         .where(Usuario.id == session_user_id)
     )
+    if (
+        assignment.perfil.upper() == "USUARIO"
+        and usuario_actual is not None
+        and not usuario_tiene_funciones_carga(usuario_actual, db)
+    ):
+        return RedirectResponse("/", status_code=303)
     if fecha_desde is None and fecha_hasta is None and usuario_actual is not None:
         fecha_desde, fecha_hasta, _ = limites_fecha_carga_usuario(usuario_actual)
     if fecha_desde and fecha_hasta and fecha_desde > fecha_hasta:
@@ -1486,6 +1681,7 @@ class FilaDetalleExportacion(NamedTuple):
     cantidad: Decimal
     fecha: date
     observaciones: str | None
+    fecha_descanso_compensatorio: date | None
 
 
 def conceptos_exportables_hora(hora: HoraExtra) -> list[tuple[str, Decimal]]:
@@ -1585,6 +1781,7 @@ def detalle_exportacion_rrhh(
             cantidad,
             hora.fecha,
             hora.observaciones,
+            hora.fecha_descanso_compensatorio,
         )
         for hora in db.scalars(consulta)
         for concepto, cantidad in conceptos_exportables_hora(hora)
@@ -1675,9 +1872,10 @@ def rrhh_exportacion_xlsx(
     detail_sheet = workbook.create_sheet("Detalle")
     detail_headers = (
         "Legajo", "Nombre y apellido", "Concepto", "Cantidad", "Fecha", "Observación",
+        "Día previsto para tomar",
     )
     detail_sheet.append(detail_headers)
-    for legajo, nombre, apellido, concepto, cantidad, fecha, observaciones in detalle:
+    for legajo, nombre, apellido, concepto, cantidad, fecha, observaciones, fecha_descanso in detalle:
         detail_sheet.append((
             legajo or "",
             f"{nombre} {apellido}".strip(),
@@ -1685,6 +1883,7 @@ def rrhh_exportacion_xlsx(
             float(cantidad),
             fecha,
             observaciones or "",
+            fecha_descanso,
         ))
     for cell in detail_sheet[1]:
         cell.font = Font(color="FFFFFF", bold=True)
@@ -1697,9 +1896,12 @@ def rrhh_exportacion_xlsx(
     detail_sheet.column_dimensions["D"].width = 14
     detail_sheet.column_dimensions["E"].width = 14
     detail_sheet.column_dimensions["F"].width = 55
+    detail_sheet.column_dimensions["G"].width = 24
     for cell in detail_sheet["D"][1:]:
         cell.number_format = "0.00"
     for cell in detail_sheet["E"][1:]:
+        cell.number_format = "DD/MM/YYYY"
+    for cell in detail_sheet["G"][1:]:
         cell.number_format = "DD/MM/YYYY"
     output = io.BytesIO()
     workbook.save(output)
@@ -1724,6 +1926,10 @@ def nueva_solicitud(
     except SQLAlchemyError:
         error = "No se pudieron cargar los usuarios activos. Verificá la conexión con la base."
     fecha_minima, fecha_maxima, _ = limites_fecha_carga_usuario(usuarios[0]) if usuarios else (None, None, None)
+    franja_nocturna = franja_nocturna_convenio(
+        db, usuarios[0].convenio if usuarios else None,
+    )
+    convenio_usuario = usuarios[0].convenio if usuarios else None
     return templates.TemplateResponse(request, "home.html", {
         "active_page": "horas",
         "usuarios": usuarios,
@@ -1732,10 +1938,12 @@ def nueva_solicitud(
         "fecha_hoy": date.today().isoformat(),
         "fecha_minima": fecha_minima.isoformat() if fecha_minima else "",
         "fecha_maxima": fecha_maxima.isoformat() if fecha_maxima else "",
-        "tipos_otras_cargas": tipos_otras_cargas(db),
+        "tipos_otras_cargas": tipos_otras_cargas(db, convenio_usuario),
         "conceptos_excepcionales": conceptos_excepcionales_habilitados(db, usuarios[0].id) if usuarios else [],
         "feriados": fechas_feriados(db),
         "feriados_sin_devolucion": fechas_feriados_sin_devolucion(db),
+        "franja_nocturna": franja_nocturna,
+        "permite_reintegro_convenio": convenio_permite_reintegro(db, convenio_usuario),
         "error": error,
     })
 
@@ -1748,6 +1956,7 @@ def renderizar_borrador_solicitud(
     reintegros: list[str],
     observaciones_resultados: list[str | None],
     error: str | None = None,
+    aviso: str | None = None,
     destino: str = "propio",
     status_code: int = 200,
 ):
@@ -1759,6 +1968,11 @@ def renderizar_borrador_solicitud(
     conceptos_automaticos, claves_jornada = conceptos_automaticos_borrador(
         resultados, db,
     )
+    franja_nocturna = franja_nocturna_convenio(
+        db, usuarios[0].convenio if usuarios else None,
+    )
+    convenio_usuario = usuarios[0].convenio if usuarios else None
+    fechas_descanso = [decode_carga(carga)[11] for carga in cargas]
     return templates.TemplateResponse(
         request,
         "solicitud.html",
@@ -1768,6 +1982,7 @@ def renderizar_borrador_solicitud(
             "claves_jornada": claves_jornada,
             "conceptos_automaticos": conceptos_automaticos,
             "observaciones_resultados": observaciones_resultados,
+            "fechas_descanso": fechas_descanso,
             "cargas": cargas,
             "reintegros": reintegros,
             "usuarios": usuarios,
@@ -1776,12 +1991,14 @@ def renderizar_borrador_solicitud(
             "fecha_hoy": date.today().isoformat(),
             "fecha_minima": fecha_minima.isoformat() if fecha_minima else "",
             "fecha_maxima": fecha_maxima.isoformat() if fecha_maxima else "",
-            "tipos_otras_cargas": tipos_otras_cargas(db),
+            "tipos_otras_cargas": tipos_otras_cargas(db, convenio_usuario),
             "conceptos_excepcionales": conceptos_excepcionales_habilitados(
                 db, usuarios[0].id,
             ) if usuarios else [],
             "feriados": fechas_feriados(db),
             "feriados_sin_devolucion": fechas_feriados_sin_devolucion(db),
+            "franja_nocturna": franja_nocturna,
+            "permite_reintegro_convenio": convenio_permite_reintegro(db, convenio_usuario),
             "total_horas": sum(
                 (item.horas_totales or Decimal("0.00") for item in resultados),
                 start=Decimal("0.00"),
@@ -1791,6 +2008,7 @@ def renderizar_borrador_solicitud(
                 start=Decimal("0.00"),
             ),
             "error": error,
+            "aviso": aviso,
         },
         status_code=status_code,
     )
@@ -1800,7 +2018,7 @@ def renderizar_borrador_solicitud(
 def procesar_solicitud(
     request: Request,
     usuario_id: Annotated[int, Form()],
-    fecha: Annotated[list[date], Form()],
+    fecha: Annotated[list[date] | None, Form()] = None,
     tipo_registro: Annotated[str, Form()] = "HORAS",
     hora_inicio: Annotated[time | None, Form()] = None,
     hora_fin: Annotated[time | None, Form()] = None,
@@ -1813,9 +2031,16 @@ def procesar_solicitud(
     incluye_horas_extra: Annotated[str | None, Form()] = None,
     tipo_otra_carga: Annotated[str | None, Form()] = None,
     cantidad: Annotated[Decimal | None, Form()] = None,
+    jornada_nocturna_inicio: Annotated[time | None, Form()] = None,
+    jornada_nocturna_fin: Annotated[time | None, Form()] = None,
+    modo_nocturnas: Annotated[str, Form()] = "FECHAS",
+    nocturna_fecha_desde: Annotated[date | None, Form()] = None,
+    nocturna_fecha_hasta: Annotated[date | None, Form()] = None,
+    nocturna_dias_semana: Annotated[list[int] | None, Form()] = None,
     jornada_hora_inicio: Annotated[time | None, Form()] = None,
     jornada_hora_fin: Annotated[time | None, Form()] = None,
     cantidad_horas_extra: Annotated[Decimal | None, Form()] = None,
+    fecha_descanso_compensatorio: Annotated[date | None, Form()] = None,
     concepto_adicional_tipo: Annotated[list[str] | None, Form()] = None,
     concepto_adicional_cantidad: Annotated[list[Decimal] | None, Form()] = None,
     concepto_adicional_observacion: Annotated[list[str] | None, Form()] = None,
@@ -1826,8 +2051,8 @@ def procesar_solicitud(
     articulo_inicio_hora: Annotated[time | None, Form()] = None,
     db: Session = Depends(get_db),
 ):
-    fechas = list(dict.fromkeys(fecha))
-    fecha_principal = fechas[0]
+    fechas_recibidas = list(fecha or [])
+    fechas = list(dict.fromkeys(fechas_recibidas))
     resultados = []
     observaciones_resultados: list[str | None] = []
     cargas_codificadas = list(cargas or [])
@@ -1841,9 +2066,11 @@ def procesar_solicitud(
         )
     selecciones_reintegro = selecciones_reintegro[:len(cargas_codificadas)]
     error = None
+    aviso = None
+    feriados_omitidos = 0
     try:
         tipo_registro = tipo_registro.strip().upper()
-        if len(fecha) != len(fechas):
+        if len(fechas_recibidas) != len(fechas):
             raise CalculoHorasError("No repitas una fecha en la misma carga.")
         observacion_limpia = clean_optional(observaciones)
         if observacion_limpia is None:
@@ -1856,17 +2083,46 @@ def procesar_solicitud(
         if usuario_carga is None:
             raise CalculoHorasError("No tenés permiso para cargar horas al usuario seleccionado.")
         convenio_carga = str(usuario_carga.convenio or "").strip().upper()
-        if convenio_carga == "FC" and tipo_registro != "DIA_TRABAJADO":
+        es_nocturnidad_solicitada = (
+            tipo_registro == "OTRAS"
+            and str(tipo_otra_carga or "").strip().upper()
+            in TIPOS_NOCTURNAS_EN_JORNADA
+        )
+        modo_nocturnas = str(modo_nocturnas or "FECHAS").strip().upper()
+        if es_nocturnidad_solicitada and modo_nocturnas == "PERIODO":
+            if nocturna_fecha_desde is None or nocturna_fecha_hasta is None:
+                raise CalculoHorasError("Ingresá las fechas desde y hasta del período habitual.")
+            if nocturna_fecha_hasta < nocturna_fecha_desde:
+                raise CalculoHorasError("La fecha hasta no puede ser anterior a la fecha desde.")
+            if (nocturna_fecha_hasta - nocturna_fecha_desde).days > 62:
+                raise CalculoHorasError("El período habitual no puede superar 63 días.")
+            dias_elegidos = set(nocturna_dias_semana or [])
+            if not dias_elegidos or not dias_elegidos.issubset(set(range(7))):
+                raise CalculoHorasError("Seleccioná al menos un día válido de la semana.")
+            fechas = []
+            fecha_iterada = nocturna_fecha_desde
+            while fecha_iterada <= nocturna_fecha_hasta:
+                if (
+                    fecha_iterada.weekday() in dias_elegidos
+                ):
+                    if clasificar_tipo_dia(fecha_iterada, db) == "FERIADO":
+                        feriados_omitidos += 1
+                    else:
+                        fechas.append(fecha_iterada)
+                fecha_iterada += timedelta(days=1)
+        elif es_nocturnidad_solicitada and modo_nocturnas != "FECHAS":
+            raise CalculoHorasError("La modalidad de selección de días no es válida.")
+        if not fechas:
             raise CalculoHorasError(
-                "FC sólo permite informar un franco o feriado trabajado."
+                "No hay fechas válidas para cargar. Revisá el período, los días elegidos y los feriados."
             )
+        fecha_principal = fechas[0]
         if convenio_carga == "FC" and (
-            incluye_horas_extra == "on"
-            or concepto_adicional_tipo
+            concepto_adicional_tipo
             or str(calcular_hs_articulo or "").upper() == "SI"
         ):
             raise CalculoHorasError(
-                "FC no permite agregar horas extras ni conceptos adicionales."
+                "FC no permite agregar conceptos adicionales."
             )
         if (
             str(calcular_hs_articulo or "").upper() == "SI"
@@ -1945,13 +2201,55 @@ def procesar_solicitud(
                 ))
 
         if tipo_registro == "OTRAS":
-            if not tipo_otra_carga or cantidad is None:
-                raise CalculoHorasError("Seleccioná un tipo de carga e ingresá la cantidad.")
+            if not tipo_otra_carga:
+                raise CalculoHorasError("Seleccioná un tipo de carga.")
+            es_nocturnidad_jornada = (
+                tipo_otra_carga.strip().upper() in TIPOS_NOCTURNAS_EN_JORNADA
+            )
+            if not es_nocturnidad_jornada and cantidad is None:
+                raise CalculoHorasError("Ingresá la cantidad de la carga.")
             if tipo_otra_carga.strip().upper() == "HS ARTICULO":
                 raise CalculoHorasError(
                     "HS ARTICULO sólo puede calcularse desde una carga de horas extras."
                 )
-            if tipo_otra_carga.startswith("EXCEPCIONAL:"):
+            if es_nocturnidad_jornada:
+                if jornada_nocturna_inicio is None or jornada_nocturna_fin is None:
+                    raise CalculoHorasError("Ingresá el horario completo de tu jornada habitual.")
+                superposiciones_omitidas = 0
+                for fecha_seleccionada in fechas:
+                    try:
+                        validar_nocturnidad_sin_superposicion(
+                            usuario_id, fecha_seleccionada,
+                            jornada_nocturna_inicio, jornada_nocturna_fin, db,
+                            resultados + [item[0] for item in nuevos_items],
+                        )
+                    except CalculoHorasError:
+                        if modo_nocturnas != "PERIODO":
+                            raise
+                        superposiciones_omitidas += 1
+                        continue
+                    resultado = calcular_resultado_nocturnas_en_jornada(
+                        usuario_id, fecha_seleccionada,
+                        jornada_nocturna_inicio, jornada_nocturna_fin, db,
+                    )
+                    nuevos_items.append((
+                        resultado, fecha_seleccionada, jornada_nocturna_inicio,
+                        jornada_nocturna_fin, "OTRAS", False,
+                    ))
+                if not nuevos_items:
+                    raise CalculoHorasError(
+                        "Todas las fechas del período fueron omitidas por feriados o cargas superpuestas."
+                    )
+                omisiones = []
+                if feriados_omitidos:
+                    omisiones.append(f"{feriados_omitidos} feriado(s)")
+                if superposiciones_omitidas:
+                    omisiones.append(
+                        f"{superposiciones_omitidas} fecha(s) con cargas superpuestas"
+                    )
+                if omisiones:
+                    aviso = "Se omitieron " + " y ".join(omisiones) + "."
+            elif tipo_otra_carga.startswith("EXCEPCIONAL:"):
                 try:
                     concepto_id = int(tipo_otra_carga.split(":", 1)[1])
                 except ValueError as error_conversion:
@@ -2071,9 +2369,25 @@ def procesar_solicitud(
                     hora_fin=jornada_hora_fin,
                 )
                 es_franco = dia_trabajado.tipo_dia == "FRANCO"
+                reintegro_permitido = False
+                try:
+                    calcular_resultado_reintegro(
+                        usuario_id, fecha_principal, db, Decimal("1.00"),
+                    )
+                    reintegro_permitido = True
+                except CalculoHorasError:
+                    pass
+                fecha_descanso = None
+                if seleccion_reintegro_solicitada == "NO" and reintegro_permitido:
+                    if fecha_descanso_compensatorio is None:
+                        raise CalculoHorasError(
+                            "Indicá qué día vas a tomar el franco o feriado trabajado."
+                        )
+                    fecha_descanso = fecha_descanso_compensatorio
                 nuevos_items.append((
                     dia_trabajado, fecha_principal, jornada_hora_inicio,
                     jornada_hora_fin, "DIA_TRABAJADO", es_franco,
+                    observacion_limpia, fecha_descanso,
                 ))
             fechas_jornada = {
                 tramo[0] for tramo in tramos_jornada
@@ -2096,11 +2410,7 @@ def procesar_solicitud(
                 ))
             if incluye_horas_extra == "on" and jornada_corta:
                 raise CalculoHorasError(
-                    "Un franco o feriado de menos de 4 horas ya se registra íntegramente como horas extras al 100%."
-                )
-            if incluye_horas_extra == "on" and convenio_carga == "FC":
-                raise CalculoHorasError(
-                    "FC no permite agregar horas extras al día trabajado."
+                    "La jornada informada ya se registra íntegramente como horas extras al 100%."
                 )
             if incluye_horas_extra == "on" and not jornada_corta:
                 if cantidad_horas_extra is None:
@@ -2138,7 +2448,7 @@ def procesar_solicitud(
             if seleccion_reintegro in {"ON", "MEDIO", "COMPLETO"}:
                 if jornada_corta:
                     raise CalculoHorasError(
-                        "Un franco o feriado de menos de 4 horas no genera reintegro del día."
+                        "La jornada informada no genera reintegro del día."
                     )
                 if domingo_inicio:
                     raise CalculoHorasError("El trabajo en domingo no permite solicitar reintegro.")
@@ -2174,6 +2484,9 @@ def procesar_solicitud(
                 cantidad=resultado.cantidad if tipo_item in {"OTRAS", "EXCEPCIONAL", "REINTEGRO"} else None,
                 concepto_excepcional_id=resultado.concepto_excepcional_id,
                 concepto_excepcional_nombre=resultado.concepto_excepcional_nombre,
+                fecha_descanso_compensatorio=(
+                    item[7] if len(item) > 7 and tipo_item == "DIA_TRABAJADO" else None
+                ),
             )
             for item in nuevos_items
             for resultado, fecha_tramo, inicio_tramo, fin_tramo, tipo_item, es_franco_item in [item[:6]]
@@ -2188,6 +2501,7 @@ def procesar_solicitud(
     return renderizar_borrador_solicitud(
         request, db, resultados, cargas_codificadas, selecciones_reintegro,
         observaciones_resultados, error=error, destino=destino,
+        aviso=aviso,
         status_code=422 if error and not resultados else 200,
     )
 
@@ -2245,6 +2559,16 @@ def confirmar_solicitud(
                 fecha_a_validar -= timedelta(days=1)
             validar_fecha_carga_usuario(usuario_carga, fecha_a_validar)
             resultado = calcular_carga_codificada(datos, db)
+            if (
+                resultado.tipo_registro == "OTRAS"
+                and str(resultado.tipo_hora or "").upper()
+                in TIPOS_NOCTURNAS_EN_JORNADA
+            ):
+                validar_nocturnidad_sin_superposicion(
+                    resultado.usuario_id, resultado.fecha,
+                    resultado.hora_inicio, resultado.hora_fin, db,
+                    resultados_confirmacion,
+                )
             resultados_confirmacion.append(resultado)
             es_domingo = (
                 resultado.tipo_registro == "OTRAS"
@@ -2280,6 +2604,30 @@ def confirmar_solicitud(
                         f"Ya existe un {concepto} para esa fecha."
                     )
 
+        reintegros_en_borrador = {
+            (resultado.usuario_id, resultado.fecha)
+            for resultado in resultados_confirmacion
+            if resultado.tipo_registro == "REINTEGRO"
+        }
+        for datos, resultado in zip(datos_cargas, resultados_confirmacion):
+            if resultado.tipo_registro != "DIA_TRABAJADO":
+                continue
+            tiene_reintegro = (
+                resultado.usuario_id, resultado.fecha
+            ) in reintegros_en_borrador
+            reintegro_permitido = False
+            try:
+                calcular_resultado_reintegro(
+                    resultado.usuario_id, resultado.fecha, db, Decimal("1.00"),
+                )
+                reintegro_permitido = True
+            except CalculoHorasError:
+                pass
+            if reintegro_permitido and not tiene_reintegro and datos[11] is None:
+                raise CalculoHorasError(
+                    "Indicá qué día vas a tomar el franco o feriado trabajado."
+                )
+
         evitar_nocturnidad_duplicada_en_jornada(resultados_confirmacion)
 
         fecha_carga = datetime.now()
@@ -2302,6 +2650,9 @@ def confirmar_solicitud(
                 tipo_hora=resultado.tipo_hora,
                 horas_nocturnas=resultado.horas_nocturnas,
                 solicita_reintegro=solicita_reintegro,
+                fecha_descanso_compensatorio=(
+                    datos[11] if resultado.tipo_registro == "DIA_TRABAJADO" else None
+                ),
                 observaciones=datos[4],
                 estado="PENDIENTE",
                 aprobado_por=None,
@@ -3027,7 +3378,10 @@ def crear_usuario(
         raise HTTPException(status_code=422, detail="El convenio seleccionado no es válido.")
     convenio = convenio.strip().upper()
     usuario = Usuario(hashed_password=hash_password(password))
-    update_user_fields(usuario, legajo, nombre, apellido, correo, convenio, id_tipo_contratacion, observaciones, username, origen, status)
+    update_user_fields(
+        usuario, legajo, nombre, apellido, correo, convenio,
+        id_tipo_contratacion, observaciones, username, origen, status,
+    )
     db.add(usuario)
     try:
         db.flush()
@@ -3071,7 +3425,10 @@ def actualizar_usuario(
         if len(password) < 8:
             return RedirectResponse(f"/configuracion/usuarios?editar_usuario={usuario_id}&error=La+contraseña+debe+tener+al+menos+8+caracteres", status_code=303)
         usuario.hashed_password = hash_password(password)
-    update_user_fields(usuario, legajo, nombre, apellido, correo, convenio, id_tipo_contratacion, observaciones, username, origen, status)
+    update_user_fields(
+        usuario, legajo, nombre, apellido, correo, convenio,
+        id_tipo_contratacion, observaciones, username, origen, status,
+    )
     try:
         db.commit()
     except IntegrityError:
@@ -3126,6 +3483,9 @@ def pending_owned_hour(request: Request, hora_id: int, db: Session) -> HoraExtra
             detail="El perfil jefe no puede modificar ni eliminar horas extras.",
         )
     user_id = (request.session.get("user") or {}).get("id")
+    current_user = db.get(Usuario, user_id)
+    if current_user is not None and not usuario_tiene_funciones_carga(current_user, db):
+        raise HTTPException(status_code=403, detail="No tenés funciones de carga habilitadas.")
     hour = db.scalar(
         select(HoraExtra)
         .options(selectinload(HoraExtra.usuario))
@@ -3159,6 +3519,7 @@ def guardar_hora_propia(
     hora_fin: Annotated[time | None, Form()] = None,
     marcar_como_franco: Annotated[str | None, Form()] = None,
     solicita_reintegro: Annotated[str | None, Form()] = None,
+    fecha_descanso_compensatorio: Annotated[date | None, Form()] = None,
     observaciones: Annotated[str | None, Form()] = None,
     db: Session = Depends(get_db),
 ):
@@ -3186,6 +3547,25 @@ def guardar_hora_propia(
             hour.horas_nocturnas = None
             hour.cantidad = result.cantidad
             hour.solicita_reintegro = True
+        elif (
+            hour.tipo_registro == "OTRAS"
+            and str(hour.tipo_hora or "").upper() in TIPOS_NOCTURNAS_EN_JORNADA
+        ):
+            if hora_inicio is None or hora_fin is None:
+                raise CalculoHorasError("Ingresá el horario completo de la jornada.")
+            validar_nocturnidad_sin_superposicion(
+                hour.usuario_id, fecha, hora_inicio, hora_fin, db,
+                excluir_hora_id=hour.id,
+            )
+            result = calcular_resultado_nocturnas_en_jornada(
+                hour.usuario_id, fecha, hora_inicio, hora_fin, db,
+            )
+            hour.hora_inicio = result.hora_inicio
+            hour.hora_fin = result.hora_fin
+            hour.horas_totales = None
+            hour.horas_nocturnas = None
+            hour.cantidad = result.cantidad
+            hour.solicita_reintegro = False
         elif hour.tipo_registro == "DIA_TRABAJADO":
             if hora_inicio is None or hora_fin is None:
                 raise CalculoHorasError("Ingresá la hora de inicio y finalización de la jornada.")
@@ -3217,6 +3597,10 @@ def guardar_hora_propia(
         hour.tipo_dia = result.tipo_dia
         hour.tipo_hora = result.tipo_hora
         hour.observaciones = observacion_limpia
+        if hour.tipo_registro == "DIA_TRABAJADO" and hour.fecha_descanso_compensatorio is not None:
+            if fecha_descanso_compensatorio is None:
+                raise CalculoHorasError("Indicá qué día vas a tomar el franco o feriado trabajado.")
+            hour.fecha_descanso_compensatorio = fecha_descanso_compensatorio
         db.flush()
         if hour.tipo_registro == "HORAS":
             jornada_nueva = fecha_jornada_de_hora_pendiente(hour, db)

@@ -31,7 +31,7 @@
           <td data-label="Tipo de hora">{{ hora.concepto_excepcional_nombre if hora.tipo_registro == 'EXCEPCIONAL' else (hora.tipo_hora or '—') }}</td>
           <td data-label="Cantidad">{% if hora.tipo_registro == 'DIA_TRABAJADO' %}1{% elif hora.cantidad is not none %}{{ '%.1f'|format(hora.cantidad) if hora.tipo_hora|upper == 'HS ARTICULO' else '%.2f'|format(hora.cantidad) }}{% elif hora.horas_totales is not none %}{{ '%.2f'|format(hora.horas_totales) }}{% else %}—{% endif %}</td>
           <td data-label="Estado">{% if hora.estado == 'APROBADA' %}<span class="status-chip success-chip">Autorizada</span>{% elif hora.estado == 'RECHAZADA' %}<span class="status-chip error-chip">Rechazada</span>{% else %}<span class="status-chip info-chip">Pendiente</span>{% endif %}</td>
-          <td data-label="Observaciones" class="observations">{{ hora.observaciones or '—' }}</td>
+          <td data-label="Observaciones" class="observations">{{ hora.observaciones or '—' }}{% if hora.fecha_descanso_compensatorio %}<span class="cell-help"><strong>Día previsto para tomar:</strong> {{ hora.fecha_descanso_compensatorio.strftime('%d/%m/%Y') }}</span>{% endif %}</td>
           <td data-label="Observación de rechazo" class="observations">{{ hora.observacion_rechazo or '—' }}</td>
         </tr>{% endfor %}</tbody>
       </table></div>

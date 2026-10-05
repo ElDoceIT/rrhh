@@ -49,6 +49,7 @@
     </div>
   </header>
   <main class="main-content">{% block content %}{% endblock %}</main>
+  {% if current_user %}<aside class="development-notice" role="status" aria-label="Aviso de aplicación en desarrollo"><span class="development-notice-icon" aria-hidden="true">🚨</span><span><strong>Aplicación en desarrollo</strong><small>Esta versión se encuentra en etapa de revisión. Los cálculos y registros deben validarse antes de su uso definitivo.</small></span></aside>{% endif %}
   <footer class="app-footer">Canal Doce © 2026 · Gestión de horas extras - V:dev0.7</footer>
   <script src="/static/js/app.js"></script>
 </body>

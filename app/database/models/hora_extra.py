@@ -100,6 +100,11 @@ class HoraExtra(Base):
         default=False,
     )
 
+    fecha_descanso_compensatorio: Mapped[date | None] = mapped_column(
+        Date,
+        nullable=True,
+    )
+
     observaciones: Mapped[str | None] = mapped_column(
         Text,
         nullable=True,

@@ -84,13 +84,10 @@ def calcular_resultado_dia_trabajado(
             )
         tipo_dia = "FRANCO"
     convenio_normalizado = usuario.convenio.strip().upper()
-    regla_fc = None
     if convenio_normalizado == "FC":
-        regla_fc = obtener_regla_horas(usuario.convenio, tipo_dia, db)
-        if str(regla_fc.tipo_hora or "").strip().upper().replace("_", " ") != "DIA TRABAJADO":
-            raise CalculoHorasError(
-                "La regla de FC debe tener el tipo de hora DIA TRABAJADO."
-            )
+        # FC usa la misma regla base del día para informar la jornada y para
+        # calcular sus eventuales horas extra (50 % o 100 %).
+        obtener_regla_horas(usuario.convenio, tipo_dia, db)
     if (hora_inicio is None) != (hora_fin is None):
         raise CalculoHorasError("Ingresá el horario completo de la jornada trabajada.")
     horas_totales = None
@@ -202,6 +199,84 @@ def calcular_horas_nocturnas(
     return _minutos_a_horas(minutos_nocturnos)
 
 
+TIPO_NOCTURNAS_EN_JORNADA = "NOCTURNAS EN JORNADA"
+TIPOS_NOCTURNAS_EN_JORNADA = {
+    TIPO_NOCTURNAS_EN_JORNADA,
+    "HORAS NOCTURNAS EN JORNADA",  # Compatibilidad con borradores previos.
+}
+
+
+def calcular_resultado_nocturnas_en_jornada(
+    usuario_id: int,
+    fecha: date,
+    hora_inicio: time,
+    hora_fin: time,
+    db: Session,
+) -> ResultadoHorasExtra:
+    if (
+        hora_inicio.minute not in {0, 30}
+        or hora_fin.minute not in {0, 30}
+        or hora_inicio.second != 0
+        or hora_fin.second != 0
+    ):
+        raise CalculoHorasError("El horario de la jornada debe ingresarse cada 30 minutos.")
+    if hora_inicio == hora_fin:
+        raise CalculoHorasError("La jornada no puede comenzar y finalizar a la misma hora.")
+    usuario = db.get(Usuario, usuario_id)
+    if usuario is None or not usuario.status or not usuario.convenio:
+        raise CalculoHorasError("El usuario no existe, está inactivo o no tiene convenio.")
+    franjas = list(db.execute(
+        select(ReglaHora.hora_nocturna_desde, ReglaHora.hora_nocturna_hasta)
+        .where(
+            func.upper(ReglaHora.convenio) == usuario.convenio.strip().upper(),
+            ReglaHora.hora_nocturna_desde.is_not(None),
+            ReglaHora.hora_nocturna_hasta.is_not(None),
+        )
+        .distinct()
+    ).tuples())
+    if not franjas:
+        raise CalculoHorasError(
+            "Tu convenio no tiene configurada una franja de horas nocturnas."
+        )
+    if len(franjas) > 1:
+        raise CalculoHorasError(
+            "El convenio tiene franjas nocturnas diferentes. RRHH debe unificar la configuración antes de calcular."
+        )
+    nocturna_desde, nocturna_hasta = franjas[0]
+    cantidad = sum(
+        (
+            calcular_horas_nocturnas(
+                inicio_tramo, fin_tramo, nocturna_desde, nocturna_hasta,
+            )
+            for _, inicio_tramo, fin_tramo in dividir_carga_en_fechas(
+                fecha, hora_inicio, hora_fin,
+            )
+        ),
+        start=Decimal("0.00"),
+    )
+    if cantidad <= 0:
+        raise CalculoHorasError(
+            "El horario indicado no contiene horas dentro de la franja nocturna configurada."
+        )
+    return ResultadoHorasExtra(
+        usuario_id=usuario.id,
+        usuario_nombre=f"{usuario.apellido}, {usuario.nombre}",
+        legajo=usuario.legajo,
+        convenio=usuario.convenio,
+        fecha=fecha,
+        hora_inicio=hora_inicio,
+        hora_fin=hora_fin,
+        tipo_dia=clasificar_tipo_dia(fecha, db),
+        tipo_hora=TIPO_NOCTURNAS_EN_JORNADA,
+        horas_totales=None,
+        horas_nocturnas=None,
+        permite_reintegro=False,
+        regla_id=None,
+        tipo_registro="OTRAS",
+        cantidad=cantidad,
+    )
+
+
 def obtener_regla_horas(
     convenio: str,
     tipo_dia: str,
@@ -305,6 +380,8 @@ def calcular_resultado_concepto_excepcional(
     concepto = db.get(ConceptoExcepcional, concepto_id)
     if concepto is None or not concepto.activo:
         raise CalculoHorasError("El concepto excepcional no existe o está inactivo.")
+    if concepto.tipo != "CARGA_MANUAL":
+        raise CalculoHorasError("El concepto seleccionado es un permiso y no una carga.")
     asignacion = db.scalar(
         select(UsuarioConceptoExcepcional).where(
             UsuarioConceptoExcepcional.usuario_id == usuario_id,
