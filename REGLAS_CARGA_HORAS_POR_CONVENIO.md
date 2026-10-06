@@ -69,10 +69,11 @@ Reglas especiales de domingo SAT:
 
 | Tipo de día | Tipo resultante | Nocturnidad | Reintegro | Observación vigente |
 |---|---:|---|---|---|
-| FERIADO | DIA TRABAJADO | No | No | Informa 1 feriado trabajado, sin mínimo de horas |
-| FRANCO | DIA TRABAJADO | No | No | Informa 1 franco trabajado, sin mínimo de horas |
+| HABIL | 50 | No | No | Horas extras de día hábil |
+| FERIADO | DIA TRABAJADO + horas al 100% | No | No | Informa 1 feriado trabajado y permite horas extras separadas |
+| FRANCO | DIA TRABAJADO + horas al 100% | No | No | Informa 1 franco trabajado y permite horas extras separadas |
 
-FC sólo permite informar un franco o feriado trabajado. No permite horas extras, reintegros, otras cargas, conceptos asociados, COMIDA ni MERIENDA. Si la jornada cruza medianoche conserva el horario completo sin exigir una regla HABIL ni calcular nocturnidad.
+FC requiere una habilitación excepcional vigente. Permite horas extras hábiles al 50% y, dentro de un franco o feriado trabajado, horas extras separadas al 100%. No permite reintegros, otras cargas, conceptos asociados, COMIDA ni MERIENDA. No calcula nocturnidad.
 
 ## MONOTRIBUTISTA
 

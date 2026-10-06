@@ -1,15 +1,13 @@
 <!doctype html>
 <html lang="es">
-
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <script>if (localStorage.getItem("app_theme") === "dark") { document.documentElement.dataset.theme = "dark" }</script>
+  <script>if(localStorage.getItem("app_theme")==="dark"){document.documentElement.dataset.theme="dark"}</script>
   <title>{% block title %}Horas extras{% endblock %} · RRHH</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
   <link rel="stylesheet" href="/static/css/styles.css">
 </head>
-
 <body>
   {% set current_user = request.session.get("user") %}
   <header class="app-menu">
@@ -17,64 +15,41 @@
       <a class="app-brand-mark" href="/" aria-label="Inicio" title="Inicio">
         <img src="/static/logoc12_1.png" alt="Canal Doce" width="25" height="25">
       </a>
-      <a class="home-button{% if active_page == 'inicio' %} active{% endif %}" href="/" aria-label="Inicio"
-        title="Inicio"><i class="bi bi-house-door-fill"></i></a>
+      <a class="home-button{% if active_page == 'inicio' %} active{% endif %}" href="/" aria-label="Inicio" title="Inicio"><i class="bi bi-house-door-fill"></i></a>
       <span class="nav-separator" aria-hidden="true"></span>
-      {% if current_user and (current_user.role|upper == 'ADMIN' or current_user.profile|upper == 'JEFE') %}<a
-        class="app-menu-link{% if active_page == 'autorizaciones' %} active{% endif %}"
-        href="/autorizaciones">Autorizaciones</a>{% if current_user.profile|upper == 'JEFE' and current_user.role|upper
-      != 'RRHH' %}<a class="app-menu-link{% if active_page == 'rrhh_horas' %} active{% endif %}"
-        href="/rrhh/horas-extras">Seguimiento</a>{% endif %}<span class="nav-separator" aria-hidden="true"></span>{%
-      endif %}
-      {% if current_user and current_user.role|upper == 'RRHH' %}<a
-        class="app-menu-link{% if active_page == 'rrhh_horas' %} active{% endif %}"
-        href="/rrhh/horas-extras">Seguimiento</a><a
-        class="app-menu-link{% if active_page == 'rrhh_exportacion' %} active{% endif %}"
-        href="/rrhh/exportacion">Exportación</a><span class="nav-separator" aria-hidden="true"></span>{% endif %}
-      {% if current_user and (current_user.role|upper in ['ADMIN', 'RRHH'] or current_user.profile|upper == 'JEFE') %}
-      <div class="menu-dropdown">
-        <button
-          class="app-menu-link dropdown-trigger{% if active_page in ['parametros', 'usuarios', 'feriados', 'conceptos_excepcionales'] %} active{% endif %}"
-          type="button">
+      {% if current_user and (current_user.role|upper == 'ADMIN' or current_user.profile|upper == 'JEFE') %}<a class="app-menu-link{% if active_page == 'autorizaciones' %} active{% endif %}" href="/autorizaciones">Autorizaciones</a>{% if current_user.profile|upper == 'JEFE' and current_user.role|upper != 'RRHH' %}<a class="app-menu-link{% if active_page == 'rrhh_horas' %} active{% endif %}" href="/rrhh/horas-extras">Seguimiento</a>{% endif %}<span class="nav-separator" aria-hidden="true"></span>{% endif %}
+      {% if current_user and current_user.role|upper == 'RRHH' %}<a class="app-menu-link{% if active_page == 'rrhh_horas' %} active{% endif %}" href="/rrhh/horas-extras">Seguimiento</a><a class="app-menu-link{% if active_page == 'rrhh_exportacion' %} active{% endif %}" href="/rrhh/exportacion">Exportación</a><span class="nav-separator" aria-hidden="true"></span>{% endif %}
+      {% if current_user and (current_user.role|upper in ['ADMIN', 'RRHH'] or current_user.profile|upper == 'JEFE') %}<div class="menu-dropdown">
+        <button class="app-menu-link dropdown-trigger{% if active_page in ['parametros', 'usuarios', 'feriados', 'conceptos_excepcionales'] %} active{% endif %}" type="button">
           Configuración <i class="bi bi-chevron-down"></i>
         </button>
         <div class="dropdown-panel">
-          {% if current_user.role|upper == 'ADMIN' %}<a href="/configuracion/parametros"><i class="bi bi-sliders"></i>
-            Parámetros</a>{% endif %}
-          {% if current_user.role|upper in ['ADMIN', 'RRHH'] %}<a href="/configuracion/usuarios"><i
-              class="bi bi-people"></i> Usuarios y roles</a>
+          {% if current_user.role|upper == 'ADMIN' %}<a href="/configuracion/parametros"><i class="bi bi-sliders"></i> Parámetros</a>{% endif %}
+          {% if current_user.role|upper in ['ADMIN', 'RRHH'] %}<a href="/configuracion/usuarios"><i class="bi bi-people"></i> Usuarios y roles</a>
           <a href="/configuracion/feriados"><i class="bi bi-calendar-event"></i> Feriados</a>{% endif %}
-          <a href="/configuracion/conceptos-excepcionales"><i class="bi bi-person-check"></i> Conceptos
-            excepcionales</a>
+          <a href="/configuracion/conceptos-excepcionales"><i class="bi bi-person-check"></i> Conceptos excepcionales</a>
         </div>
       </div>{% endif %}
     </div>
     <div class="app-menu-right">
       {% if current_user %}
-      <span class="session-user" title="{{ current_user.email or current_user.username }}"><i
-          class="bi bi-person-circle"></i> {{ current_user.display_name }}</span>
+      <span class="session-user" title="{{ current_user.email or current_user.username }}"><i class="bi bi-person-circle"></i> {{ current_user.display_name }}</span>
       {% if current_user.assignments %}
       <form method="post" action="/sesion/asignacion" class="assignment-switcher" title="Cambiar rol y perfil activo">
         <label class="sr-only" for="active-assignment">Rol y perfil activo</label>
         <select id="active-assignment" name="asignacion_id" onchange="this.form.submit()">
-          {% for asignacion in current_user.assignments %}<option value="{{ asignacion.id }}" {% if
-            asignacion.id==current_user.active_assignment_id %}selected{% endif %}>{{ asignacion.role }} · {{
-            asignacion.profile|capitalize }}</option>{% endfor %}
+          {% for asignacion in current_user.assignments %}<option value="{{ asignacion.id }}" {% if asignacion.id == current_user.active_assignment_id %}selected{% endif %}>{{ asignacion.role }} · {{ asignacion.profile|capitalize }}</option>{% endfor %}
         </select>
       </form>
       {% else %}<span class="status-chip warning-chip">Sin rol asignado</span>{% endif %}
-      <form method="post" action="/logout" class="logout-form"><button class="ui-btn icon-btn" type="submit"
-          aria-label="Cerrar sesión" title="Cerrar sesión"><i class="bi bi-box-arrow-right"></i></button></form>
+      <form method="post" action="/logout" class="logout-form"><button class="ui-btn icon-btn" type="submit" aria-label="Cerrar sesión" title="Cerrar sesión"><i class="bi bi-box-arrow-right"></i></button></form>
       {% endif %}
-      <a class="db-status" href="/health/db" target="_blank" title="Verificar conexión"><i
-          class="bi bi-database-check"></i> Base de datos</a>
-      <button class="ui-btn icon-btn" id="theme-toggle" type="button" aria-label="Cambiar tema" title="Cambiar tema"><i
-          class="bi bi-moon-stars-fill"></i></button>
+      <a class="db-status" href="/health/db" target="_blank" title="Verificar conexión"><i class="bi bi-database-check"></i> Base de datos</a>
+      <button class="ui-btn icon-btn" id="theme-toggle" type="button" aria-label="Cambiar tema" title="Cambiar tema"><i class="bi bi-moon-stars-fill"></i></button>
     </div>
   </header>
   <main class="main-content">{% block content %}{% endblock %}</main>
-  <footer class="app-footer">Canal Doce © 2026 · Gestión de horas extras - V:dev0.9</footer>
+  <footer class="app-footer">Canal Doce © 2026 · Gestión de horas extras - V:dev0.7</footer>
   <script src="/static/js/app.js"></script>
 </body>
-
 </html>

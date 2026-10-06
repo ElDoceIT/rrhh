@@ -8,11 +8,13 @@
   <section class="card form-card">
     <form method="post" action="/horas/{{ hora.id }}/editar" class="request-form">
       <label class="field"><span>Fecha *</span><input type="date" name="fecha" required value="{{ hora.fecha.isoformat() }}" {% if fecha_minima %}min="{{ fecha_minima }}"{% endif %} {% if fecha_maxima %}max="{{ fecha_maxima }}"{% endif %}></label>
-      {% if hora.tipo_registro == 'HORAS' %}
+      {% if hora.tipo_registro == 'HORAS' or (hora.tipo_registro == 'OTRAS' and hora.tipo_hora|upper in ['NOCTURNAS EN JORNADA', 'HORAS NOCTURNAS EN JORNADA']) %}
       <label class="field"><span>Hora de inicio *</span>{{ time_select('hora_inicio', hora.hora_inicio.strftime('%H:%M')) }}</label>
       <label class="field"><span>Hora de finalización *</span>{{ time_select('hora_fin', hora.hora_fin.strftime('%H:%M')) }}</label>
+      {% if hora.tipo_registro == 'OTRAS' %}<div class="info-strip"><i class="bi bi-moon-stars"></i><span>Se recalculará únicamente la nocturnidad incluida dentro de esta jornada.</span></div>{% endif %}
       {% elif hora.tipo_registro == 'DIA_TRABAJADO' %}<label class="field"><span>Hora de inicio *</span>{{ time_select('hora_inicio', hora.hora_inicio.strftime('%H:%M') if hora.hora_inicio else '') }}</label><label class="field"><span>Hora de finalización *</span>{{ time_select('hora_fin', hora.hora_fin.strftime('%H:%M') if hora.hora_fin else '') }}</label><div class="info-strip"><i class="bi bi-info-circle"></i><span>Si la fecha no es feriado, se considera automáticamente como franco.</span></div>
       {% else %}<div class="info-strip"><i class="bi bi-info-circle"></i><span>Este registro solicita únicamente el reintegro del día.</span></div>{% endif %}
+      {% if hora.tipo_registro == 'DIA_TRABAJADO' and hora.fecha_descanso_compensatorio %}<label class="field"><span>Día previsto para tomar el franco o feriado *</span><input type="date" name="fecha_descanso_compensatorio" required value="{{ hora.fecha_descanso_compensatorio.isoformat() }}"></label>{% endif %}
       <label class="field request-observations"><span>Observaciones <b>*</b></span><textarea name="observaciones" rows="3" required>{{ hora.observaciones or '' }}</textarea></label>
       <div class="request-actions"><a class="ui-btn" href="/horas">Cancelar</a><button class="ui-btn primary-btn" type="submit"><i class="bi bi-check-lg"></i> Guardar cambios</button></div>
     </form>

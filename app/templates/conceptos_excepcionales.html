@@ -37,7 +37,7 @@
     {% if conceptos %}<div class="table-wrap"><table class="ui-table">
       <thead><tr><th>Nombre y descripción</th><th>Estado</th><th>Editar</th></tr></thead>
       <tbody>{% for concepto in conceptos %}<tr>
-        <td data-label="Concepto"><strong>{{ concepto.nombre }}</strong><br><span class="muted">{{ concepto.descripcion or 'Sin descripción' }}</span></td>
+        <td data-label="Concepto"><strong>{{ concepto.nombre }}</strong> <span class="status-chip neutral-chip">{{ 'Permiso' if concepto.tipo == 'PERMISO' else 'Carga manual' }}</span><br><span class="muted">{{ concepto.descripcion or 'Sin descripción' }}</span></td>
         <td data-label="Estado">{% if concepto.activo %}<span class="status-chip success-chip">Activo</span>{% else %}<span class="status-chip neutral-chip">Inactivo</span>{% endif %}</td>
         <td data-label="Editar">
           <form method="post" action="/configuracion/conceptos-excepcionales/{{ concepto.id_concepto_excepcional }}" class="rule-form">

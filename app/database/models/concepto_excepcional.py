@@ -14,6 +14,10 @@ class ConceptoExcepcional(Base):
         INTEGER(unsigned=True), primary_key=True, autoincrement=True,
     )
     nombre: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    codigo: Mapped[str | None] = mapped_column(String(50), nullable=True, unique=True)
+    tipo: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="CARGA_MANUAL", server_default="CARGA_MANUAL",
+    )
     descripcion: Mapped[str | None] = mapped_column(Text, nullable=True)
     activo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     requiere_observacion: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)

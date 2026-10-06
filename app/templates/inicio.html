@@ -5,6 +5,10 @@
   <section class="card start-card">
     <span class="start-icon"><i class="bi bi-clock-history"></i></span>
     <span class="eyebrow">{{ rol_activo|capitalize }}</span>
+    {% if sin_funciones %}
+    <h1>Sin funciones habilitadas</h1>
+    <p>Por el momento no tenés opciones de carga disponibles.</p>
+    {% else %}
     <h1>{{ 'Autorización de horas extras' if es_jefe else '¿Qué horas querés cargar?' }}</h1>
     {% if es_jefe %}
     <p>Revisá las solicitudes del rol {{ rol_activo|capitalize }} para autorizarlas o rechazarlas.</p>
@@ -14,13 +18,14 @@
     {% endif %}
     <div class="start-history">
       <a class="pending-card pending-card-link tutorial-card" href="/ayuda/tutorial"><span class="pending-card-count"><i class="bi bi-play-fill"></i></span><span><strong>{{ tutorial_label }}</strong><small>Recorrido interactivo paso a paso según tu acceso actual.</small></span><i class="bi bi-chevron-right"></i></a>
-      <a class="pending-card pending-card-link rules-help-card" href="/ayuda/reglas"><span class="pending-card-count"><i class="bi bi-journal-check"></i></span><span><strong>{{ reglas_help_label }}</strong><small>Consultá conceptos, tipos de día y casos especiales sin guardar una carga.</small></span><i class="bi bi-chevron-right"></i></a>
+      <a class="pending-card pending-card-link rules-help-card" href="/ayuda/reglas"><span class="pending-card-count"><i class="bi bi-journal-check"></i></span><span><strong>{{ reglas_help_label }}</strong><small>Elegí el tipo de día y consultá qué conceptos corresponden, sin guardar una carga.</small></span><i class="bi bi-chevron-right"></i></a>
       {% if not es_jefe %}
       <a class="pending-card pending-card-link" href="/horas?estado=PENDIENTE"><span class="pending-card-count">{{ cargas_pendientes }}</span><span><strong>cargas tuyas pendientes</strong><small>Solicitudes propias que todavía no fueron resueltas.</small></span><i class="bi bi-chevron-right"></i></a>
       {% endif %}
       {% if es_jefe or es_admin %}<a class="pending-card pending-card-link" href="/autorizaciones"><span class="pending-card-count">{{ autorizaciones_pendientes }}</span><span><strong>pendientes de autorizar</strong><small>{{ 'Solicitudes de todos los roles.' if es_admin else 'Solicitudes del rol ' ~ (rol_activo|capitalize) ~ '.' }}</small></span><i class="bi bi-chevron-right"></i></a>{% endif %}
       {% if not es_jefe %}<a class="ui-btn start-button" href="/horas"><i class="bi bi-clock-history"></i> Historial de cargas</a>{% endif %}
     </div>
+    {% endif %}
   </section>
 </div>
 {% endblock %}

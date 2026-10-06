@@ -145,13 +145,15 @@ Ejemplo: sábado de 23:30 a domingo 07:00 → se divide por fecha, se calcula la
 
 ## Convenio FC
 
-- Sólo permite informar un franco o feriado trabajado.
+- Requiere una habilitación excepcional vigente para poder cargar.
+- Permite horas extras al 50% en días hábiles y al 100% en francos o feriados.
 - Siempre registra cantidad 1, sin importar cuántas horas duró la jornada.
 - No aplica el mínimo de cuatro horas.
-- No permite horas extras, reintegro, otras cargas ni conceptos asociados.
+- Dentro de un franco o feriado trabajado puede agregar las horas extra realizadas, que se guardan por separado al 100%.
+- No permite reintegro, otras cargas ni conceptos asociados.
 - Conserva el horario informado como respaldo, pero no calcula nocturnidad, COMIDA ni MERIENDA.
 
-Ejemplo: franco de 08:00 a 10:00 → 1 franco trabajado, sin horas extras ni reintegro.
+Ejemplo: franco de 08:00 a 18:00 con 1 hora extra → 1 franco trabajado y 1 hora al 100%, sin reintegro.
 
 ## Convenio MONOTRIBUTISTA
 
