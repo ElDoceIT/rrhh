@@ -1684,6 +1684,35 @@ class FilaDetalleExportacion(NamedTuple):
     fecha_descanso_compensatorio: date | None
 
 
+NOMBRES_CONCEPTOS_LIQUIDACION = {
+    "FRANCO TRABAJADO": "Día Franco o Feriado",
+    "FERIADO TRABAJADO": "Día Franco o Feriado",
+    "REINTEGRO FRANCO": "Reintegro de día FTN",
+    "REINTEGRO FERIADO": "Reintegro de día FTN",
+    "50": "Horas extras al 50%",
+    "50%": "Horas extras al 50%",
+    "100": "Horas extras al 100%",
+    "100%": "Horas extras al 100%",
+    "HS ARTICULO": "Horas Articulo",
+    "HS ARTÍCULO": "Horas Articulo",
+    "HORAS NOCTURNAS": "HORAS NOCTURNAS",
+    "NOCTURNAS EN JORNADA": "HORAS NOCTURNAS",
+    "HORAS NOCTURNAS EN JORNADA": "HORAS NOCTURNAS",
+    "DOMINGO": "Domingo",
+    "MERIENDA": "Vale de Merienda Imp/ SAT",
+    "EXTERIOR COMUN": "Exterior Común",
+    "EXTERIOR COMÚN": "Exterior Común",
+    "COMIDA": "Vale de Comida Imput SAT",
+}
+
+
+def nombre_concepto_liquidacion(concepto: str) -> str:
+    concepto_limpio = concepto.strip()
+    return NOMBRES_CONCEPTOS_LIQUIDACION.get(
+        concepto_limpio.upper(), concepto_limpio,
+    )
+
+
 def conceptos_exportables_hora(hora: HoraExtra) -> list[tuple[str, Decimal]]:
     conceptos: list[tuple[str, Decimal]] = []
     tipo_registro = str(hora.tipo_registro or "HORAS").upper()
@@ -1704,7 +1733,10 @@ def conceptos_exportables_hora(hora: HoraExtra) -> list[tuple[str, Decimal]]:
     # La nocturnidad es un adicional y se exporta además del concepto base.
     if hora.horas_nocturnas and hora.horas_nocturnas > 0:
         conceptos.append(("HORAS NOCTURNAS", hora.horas_nocturnas))
-    return [(concepto.strip().upper(), cantidad) for concepto, cantidad in conceptos]
+    return [
+        (nombre_concepto_liquidacion(concepto), cantidad)
+        for concepto, cantidad in conceptos
+    ]
 
 
 def consulta_cargas_exportacion_rrhh(
@@ -1794,6 +1826,13 @@ def detalle_exportacion_rrhh(
     )
 
 
+def fechas_texto_liquidacion(fecha_hasta: date | None) -> tuple[str, str]:
+    """Devuelve el rango nominal 01-30 del mes liquidado, aun si el día 30 no existe."""
+    mes_liquidacion = fecha_hasta or date.today()
+    sufijo = mes_liquidacion.strftime("%m/%Y")
+    return f"01/{sufijo}", f"30/{sufijo}"
+
+
 @app.get("/rrhh/exportacion", response_class=HTMLResponse)
 def rrhh_exportacion(
     request: Request,
@@ -1818,7 +1857,15 @@ def rrhh_exportacion(
         db, fecha_desde, fecha_hasta, contrataciones, convenios,
         periodo_activo, periodos, tipos,
     )
-    contexto.update({"active_page": "rrhh_exportacion", "filas": filas})
+    fecha_liquidacion_desde, fecha_liquidacion_hasta = fechas_texto_liquidacion(
+        fecha_hasta,
+    )
+    contexto.update({
+        "active_page": "rrhh_exportacion",
+        "filas": filas,
+        "fecha_liquidacion_desde": fecha_liquidacion_desde,
+        "fecha_liquidacion_hasta": fecha_liquidacion_hasta,
+    })
     return templates.TemplateResponse(request, "rrhh_exportacion.html", contexto)
 
 
@@ -1845,16 +1892,25 @@ def rrhh_exportacion_xlsx(
     detalle = detalle_exportacion_rrhh(
         db, fecha_desde, fecha_hasta, contrataciones, convenios,
     )
+    fecha_liquidacion_desde, fecha_liquidacion_hasta = fechas_texto_liquidacion(
+        fecha_hasta,
+    )
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Horas extras"
-    headers = ("Legajo", "Nombre y apellido", "Concepto", "Cantidad")
+    headers = (
+        "LEGAJO", "BÚSQUE POR NOMBRE", "CONCEPTO A LIQUIDAR", "FECHA DESDE",
+        "FECHA HASTA", "IMPORTE", "CANT.",
+    )
     sheet.append(headers)
     for legajo, nombre, apellido, tipo_hora, cantidad in filas:
         sheet.append((
             legajo or "",
-            f"{nombre} {apellido}".strip(),
+            f"{apellido} ,{nombre}".strip(),
             tipo_hora,
+            fecha_liquidacion_desde,
+            fecha_liquidacion_hasta,
+            "",
             float(cantidad),
         ))
     header_fill = PatternFill("solid", fgColor="1D4ED8")
@@ -1865,9 +1921,12 @@ def rrhh_exportacion_xlsx(
     sheet.auto_filter.ref = sheet.dimensions
     sheet.column_dimensions["A"].width = 16
     sheet.column_dimensions["B"].width = 34
-    sheet.column_dimensions["C"].width = 24
-    sheet.column_dimensions["D"].width = 20
-    for cell in sheet["D"][1:]:
+    sheet.column_dimensions["C"].width = 28
+    sheet.column_dimensions["D"].width = 15
+    sheet.column_dimensions["E"].width = 15
+    sheet.column_dimensions["F"].width = 14
+    sheet.column_dimensions["G"].width = 14
+    for cell in sheet["G"][1:]:
         cell.number_format = "0.00"
     detail_sheet = workbook.create_sheet("Detalle")
     detail_headers = (
