@@ -55,8 +55,10 @@ from app.main import (
     evitar_nocturnidad_duplicada_en_jornada,
     expandir_ids_con_jornadas_pendientes,
     filas_exportacion_rrhh,
+    fechas_texto_liquidacion,
     ids_habilitados_para_confirmar,
     limites_fecha_carga_usuario,
+    nombre_concepto_liquidacion,
     obtener_autorizador,
     procesar_solicitud,
     recalcular_conceptos_jornada_pendiente,
@@ -587,17 +589,39 @@ class ExportacionTests(unittest.TestCase):
             conceptos = {fila.tipo_hora: fila.cantidad for fila in filas}
 
             self.assertEqual(conceptos, {
-                "50": Decimal("5"),
-                "COMIDA": Decimal("1"),
-                "FRANCO TRABAJADO": Decimal("1"),
+                "Horas extras al 50%": Decimal("5"),
+                "Vale de Comida Imput SAT": Decimal("1"),
+                "Día Franco o Feriado": Decimal("1"),
                 "HORAS NOCTURNAS": Decimal("1"),
-                "REINTEGRO FERIADO": Decimal("1"),
+                "Reintegro de día FTN": Decimal("1"),
             })
             detalle = detalle_exportacion_rrhh(
                 db, date(2026, 8, 16), date(2026, 9, 15), [], [],
             )
             self.assertEqual(len(detalle), 5)
             self.assertTrue(all(fila.fecha is not None for fila in detalle))
+
+    def test_liquidation_dates_are_always_first_and_thirtieth_of_end_month(self):
+        self.assertEqual(
+            fechas_texto_liquidacion(date(2027, 2, 15)),
+            ("01/02/2027", "30/02/2027"),
+        )
+
+    def test_liquidation_concept_names_match_payroll_catalog(self):
+        self.assertEqual(nombre_concepto_liquidacion("100"), "Horas extras al 100%")
+        self.assertEqual(nombre_concepto_liquidacion("HS ARTICULO"), "Horas Articulo")
+        self.assertEqual(
+            nombre_concepto_liquidacion("NOCTURNAS EN JORNADA"),
+            "HORAS NOCTURNAS",
+        )
+        self.assertEqual(
+            nombre_concepto_liquidacion("MERIENDA"),
+            "Vale de Merienda Imp/ SAT",
+        )
+        self.assertEqual(
+            nombre_concepto_liquidacion("EXTERIOR PRENSA"),
+            "EXTERIOR PRENSA",
+        )
 
 
 class ReintegroTests(unittest.TestCase):
