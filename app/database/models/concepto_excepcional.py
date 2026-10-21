@@ -1,6 +1,7 @@
 from datetime import datetime
+from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Numeric, String, Text
 from sqlalchemy.dialects.mysql import INTEGER
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -17,6 +18,15 @@ class ConceptoExcepcional(Base):
     codigo: Mapped[str | None] = mapped_column(String(50), nullable=True, unique=True)
     tipo: Mapped[str] = mapped_column(
         String(20), nullable=False, default="CARGA_MANUAL", server_default="CARGA_MANUAL",
+    )
+    cantidad_predeterminada: Mapped[Decimal | None] = mapped_column(
+        Numeric(8, 2), nullable=True,
+    )
+    tipo_hora_destino: Mapped[str | None] = mapped_column(
+        String(40), nullable=True,
+    )
+    requiere_autorizacion: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="1",
     )
     descripcion: Mapped[str | None] = mapped_column(Text, nullable=True)
     activo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)

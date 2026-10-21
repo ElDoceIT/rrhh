@@ -45,6 +45,7 @@ from app.main import (
     aplicar_periodo_rapido_rrhh,
     app,
     calcular_descanso_articulo,
+    configurar_concepto_excepcional,
     convenios_visibles_para_reglas,
     confirmar_solicitud,
     conceptos_automaticos_borrador,
@@ -62,6 +63,7 @@ from app.main import (
     obtener_autorizador,
     procesar_solicitud,
     recalcular_conceptos_jornada_pendiente,
+    recalcular_conceptos_jornada_estado,
     rechazar_horas,
     rule_form_data,
     tutorial_html_for_key,
@@ -210,9 +212,35 @@ class LocalAuthTests(unittest.TestCase):
         )
         self.assertEqual(data["convenio"], "SAT")
         self.assertEqual(data["tipo_dia"], "HABIL")
+        self.assertIsNone(data["modalidad_carga"])
+        self.assertIsNone(data["cantidad_predeterminada"])
         with self.assertRaisesRegex(HTTPException, "tipo de día"):
             rule_form_data(
                 "SAT", "LABORABLE", "50", None, None, None, None,
+            )
+
+    def test_rule_form_validates_special_load_modes(self):
+        daily = rule_form_data(
+            "SAT", "TODOS", "FRACCIONAMIENTO", None, None, None, None,
+            "CARGA_POR_DIA", Decimal("1"),
+        )
+        self.assertEqual(daily["modalidad_carga"], "CARGA_POR_DIA")
+        self.assertEqual(daily["cantidad_predeterminada"], Decimal("1.00"))
+        manual = rule_form_data(
+            "SAT", "TODOS", "METROS TORRE", None, None, None, None,
+            "CARGA_MANUAL", Decimal("25"),
+        )
+        self.assertEqual(manual["modalidad_carga"], "CARGA_MANUAL")
+        self.assertIsNone(manual["cantidad_predeterminada"])
+        with self.assertRaisesRegex(HTTPException, "tipo TODOS"):
+            rule_form_data(
+                "SAT", "HABIL", "50", None, None, None, None,
+                "CARGA_POR_DIA", Decimal("1"),
+            )
+        with self.assertRaisesRegex(HTTPException, "cantidad predeterminada"):
+            rule_form_data(
+                "SAT", "TODOS", "FRACCIONAMIENTO", None, None, None, None,
+                "CARGA_POR_DIA", None,
             )
 
     def test_delete_rule_removes_only_selected_rule(self):
@@ -287,33 +315,68 @@ class LocalAuthTests(unittest.TestCase):
         )
         self.assertIsNotNone(result)
         fecha, cantidad, observacion = result
-        self.assertEqual(fecha, date(2026, 9, 19))
+        self.assertEqual(fecha, date(2026, 9, 18))
         self.assertEqual(cantidad, Decimal("3.00"))
         self.assertIn("18/09/2026 23:00", observacion)
         self.assertIn("19/09/2026 08:00", observacion)
         self.assertIn("HS ARTICULO: 3.0 horas", observacion)
 
-    def test_article_concept_is_restricted_to_sat(self):
+    def test_exceptional_concept_configuration_depends_on_type(self):
+        concept = ConceptoExcepcional(nombre="Temporal")
+        configurar_concepto_excepcional(
+            concept, "Plus Dirección", "plus direccion", "CARGA_POR_DIA",
+            "Una unidad por jornada", Decimal("1"), "100", True, True,
+        )
+        self.assertEqual(concept.codigo, "PLUS_DIRECCION")
+        self.assertEqual(concept.cantidad_predeterminada, Decimal("1.00"))
+        self.assertIsNone(concept.tipo_hora_destino)
+
+        configurar_concepto_excepcional(
+            concept, "Pack 50", "PACK_50", "PRECARGA_PERIODO",
+            None, Decimal("99"), "50", False, False,
+        )
+        self.assertIsNone(concept.cantidad_predeterminada)
+        self.assertEqual(concept.tipo_hora_destino, "50")
+        self.assertFalse(concept.requiere_autorizacion)
+
+        configurar_concepto_excepcional(
+            concept, "Permiso", "PERMISO_PRUEBA", "PERMISO",
+            None, None, None, False, True,
+        )
+        self.assertFalse(concept.requiere_autorizacion)
+
+    def test_daily_exceptional_concept_requires_default_quantity(self):
+        with self.assertRaisesRegex(CalculoHorasError, "cantidad predeterminada"):
+            configurar_concepto_excepcional(
+                ConceptoExcepcional(nombre="Temporal"),
+                "Plus", "PLUS", "CARGA_POR_DIA", None,
+                None, None, True, True,
+            )
+
+    def test_article_concept_is_enabled_by_convention_rule(self):
         with self.Session() as db:
             usuario = Usuario(
-                nombre="Mario", apellido="Mono", username="mono-articulo",
+                nombre="Sara", apellido="SAL", username="sal-articulo",
                 hashed_password="x", origen="AD", status=True,
-                convenio="MONOTRIBUTISTA",
+                convenio="SAL",
             )
-            db.add_all([
-                usuario,
-                ReglaHora(
-                    convenio="MONOTRIBUTISTA", tipo_dia="TODOS",
-                    tipo_hora="HS ARTICULO",
-                ),
-            ])
+            db.add(usuario)
             db.commit()
 
-            with self.assertRaisesRegex(CalculoHorasError, "sólo está habilitado"):
+            with self.assertRaisesRegex(CalculoHorasError, "No existe la carga"):
                 calcular_resultado_otra_carga(
                     usuario.id, date(2026, 9, 18),
                     "HS ARTICULO", Decimal("1.00"), db,
                 )
+            db.add(ReglaHora(
+                convenio="SAL", tipo_dia="TODOS", tipo_hora="HS ARTICULO",
+            ))
+            db.commit()
+            resultado = calcular_resultado_otra_carga(
+                usuario.id, date(2026, 9, 18),
+                "HS ARTICULO", Decimal("1.00"), db,
+            )
+            self.assertEqual(resultado.tipo_hora, "HS ARTICULO")
 
     def test_article_rest_same_day_and_sufficient_rest(self):
         result = calcular_descanso_articulo(
@@ -439,6 +502,38 @@ class LocalAuthTests(unittest.TestCase):
             _, allowed = usuarios_habilitados_para_carga(employee_request, db, "otro")
             self.assertEqual([item.id for item in allowed], [empleado.id])
             self.assertEqual(ids_habilitados_para_confirmar(employee_request, db), {empleado.id})
+
+    def test_rrhh_can_select_any_active_user_for_administrative_loads(self):
+        with self.Session() as db:
+            rrhh = Usuario(
+                nombre="Rita", apellido="RRHH", username="rita-rrhh",
+                hashed_password="x", origen="AD", status=True, convenio="SAT",
+            )
+            empleado = Usuario(
+                nombre="Empleado", apellido="Técnica", username="empleado-admin",
+                hashed_password="x", origen="AD", status=True, convenio="SAL",
+            )
+            inactivo = Usuario(
+                nombre="Inactivo", apellido="Técnica", username="inactivo-admin",
+                hashed_password="x", origen="AD", status=False, convenio="SAL",
+            )
+            rrhh.roles.append(UsuarioRol(rol="RRHH", perfil="USUARIO"))
+            db.add_all([rrhh, empleado, inactivo])
+            db.commit()
+            request = Request({
+                "type": "http", "method": "GET", "path": "/solicitudes/nueva",
+                "headers": [], "session": {"user": {
+                    "id": rrhh.id,
+                    "active_assignment_id": rrhh.roles[0].id_rol,
+                }},
+            })
+            _, allowed = usuarios_habilitados_para_carga(request, db, "rrhh")
+            self.assertIn(empleado.id, {item.id for item in allowed})
+            self.assertNotIn(inactivo.id, {item.id for item in allowed})
+            self.assertEqual(
+                ids_habilitados_para_confirmar(request, db, "rrhh"),
+                {rrhh.id, empleado.id},
+            )
 
     def test_regular_user_cannot_access_authorizations_and_admin_can(self):
         with self.Session() as db:
@@ -620,7 +715,7 @@ class ExportacionTests(unittest.TestCase):
         )
         self.assertEqual(
             nombre_concepto_liquidacion("EXTERIOR PRENSA"),
-            "EXTERIOR PRENSA",
+            "Ext/ Prensa Ext/ o Franco",
         )
 
 
@@ -829,6 +924,53 @@ class ReintegroTests(unittest.TestCase):
                 for item in preview.context["resultados"]
             ))
             self.assertIn("1 feriado", preview.context["aviso"])
+
+    def test_daily_exceptional_concept_generates_configured_quantity_per_selected_day(self):
+        with self.Session() as db:
+            usuario = Usuario(
+                nombre="Ana", apellido="Diaria", username="concepto-diario",
+                hashed_password="x", origen="AD", status=True, convenio="SAT",
+            )
+            usuario.roles.append(UsuarioRol(rol="COMERCIAL", perfil="USUARIO"))
+            concepto = ConceptoExcepcional(
+                nombre="Reemplazo por conducción", tipo="CARGA_POR_DIA",
+                cantidad_predeterminada=Decimal("1.00"), activo=True,
+            )
+            db.add_all([usuario, concepto])
+            db.flush()
+            db.add(UsuarioConceptoExcepcional(
+                usuario_id=usuario.id,
+                concepto_excepcional_id=concepto.id_concepto_excepcional,
+                fecha_desde=date(2026, 10, 1), fecha_hasta=date(2026, 10, 31),
+                activo=True,
+            ))
+            db.commit()
+            request = Request({
+                "type": "http", "method": "POST", "path": "/solicitudes/procesar",
+                "headers": [], "app": app,
+                "session": {"user": {
+                    "id": usuario.id,
+                    "active_assignment_id": usuario.roles[0].id_rol,
+                }},
+            })
+
+            preview = procesar_solicitud(
+                request=request, usuario_id=usuario.id, fecha=None,
+                tipo_registro="OTRAS",
+                tipo_otra_carga=f"EXCEPCIONAL:{concepto.id_concepto_excepcional}",
+                cantidad=Decimal("99.00"), modo_fechas="PERIODO",
+                periodo_fecha_desde=date(2026, 10, 19),
+                periodo_fecha_hasta=date(2026, 10, 23),
+                periodo_dias_semana=[0, 2, 4],
+                observaciones="Cobertura habitual", db=db,
+            )
+
+            resultados = preview.context["resultados"]
+            self.assertEqual([item.fecha for item in resultados], [
+                date(2026, 10, 19), date(2026, 10, 21), date(2026, 10, 23),
+            ])
+            self.assertTrue(all(item.cantidad == Decimal("1.00") for item in resultados))
+            self.assertTrue(all(item.tipo_registro == "EXCEPCIONAL" for item in resultados))
 
     def test_short_franco_or_holiday_becomes_actual_hours_and_four_hours_becomes_day(self):
         with self.Session() as db:
@@ -1192,6 +1334,135 @@ class ReintegroTests(unittest.TestCase):
             self.assertIsNotNone(reintegro)
             self.assertEqual(reintegro.cantidad, Decimal("0.50"))
 
+    def test_extra_hours_period_generates_selected_weekdays(self):
+        with self.Session() as db:
+            usuario = Usuario(
+                nombre="Ana", apellido="Período", username="periodo-horas",
+                hashed_password="x", origen="AD", status=True, convenio="SAL",
+            )
+            usuario.roles.append(UsuarioRol(rol="TECNICA", perfil="USUARIO"))
+            db.add_all([
+                usuario,
+                ReglaHora(
+                    convenio="SAL", tipo_dia="HABIL", tipo_hora="50",
+                    permite_reintegro=False,
+                ),
+            ])
+            db.commit()
+            request = Request({
+                "type": "http", "method": "POST", "path": "/solicitudes/procesar",
+                "headers": [], "app": app,
+                "session": {"user": {
+                    "id": usuario.id,
+                    "active_assignment_id": usuario.roles[0].id_rol,
+                }},
+            })
+
+            preview = procesar_solicitud(
+                request=request,
+                usuario_id=usuario.id,
+                fecha=None,
+                tipo_registro="HORAS",
+                hora_inicio=time(18),
+                hora_fin=time(19),
+                modo_fechas="PERIODO",
+                periodo_fecha_desde=date(2026, 10, 19),
+                periodo_fecha_hasta=date(2026, 10, 23),
+                periodo_dias_semana=[0, 2, 4],
+                observaciones="Horario habitual",
+                db=db,
+            )
+            self.assertEqual(
+                [item.fecha for item in preview.context["resultados"]],
+                [date(2026, 10, 19), date(2026, 10, 21), date(2026, 10, 23)],
+            )
+
+    def test_multiple_article_calculations_are_linked_to_selected_extra_days(self):
+        with self.Session() as db:
+            usuario = Usuario(
+                nombre="Sara", apellido="SAT", username="sat-articulos-multiples",
+                hashed_password="x", origen="AD", status=True, convenio="SAT",
+            )
+            usuario.roles.append(UsuarioRol(rol="TECNICA", perfil="USUARIO"))
+            db.add_all([
+                usuario,
+                ReglaHora(convenio="SAT", tipo_dia="HABIL", tipo_hora="50"),
+                ReglaHora(convenio="SAT", tipo_dia="TODOS", tipo_hora="HS ARTICULO"),
+            ])
+            db.commit()
+            request = Request({
+                "type": "http", "method": "POST", "path": "/solicitudes/procesar",
+                "headers": [], "app": app,
+                "session": {"user": {
+                    "id": usuario.id,
+                    "active_assignment_id": usuario.roles[0].id_rol,
+                }},
+            })
+            preview = procesar_solicitud(
+                request=request,
+                usuario_id=usuario.id,
+                fecha=[date(2026, 10, 19), date(2026, 10, 20)],
+                tipo_registro="HORAS",
+                hora_inicio=time(18), hora_fin=time(20),
+                calcular_hs_articulo="SI",
+                articulo_jornada_fecha_lista=[date(2026, 10, 19), date(2026, 10, 20)],
+                articulo_fin_fecha_lista=[date(2026, 10, 19), date(2026, 10, 20)],
+                articulo_fin_hora_lista=[time(20), time(20)],
+                articulo_inicio_fecha_lista=[date(2026, 10, 20), date(2026, 10, 21)],
+                articulo_inicio_hora_lista=[time(6), time(7)],
+                observaciones="Cierre especial",
+                db=db,
+            )
+            articulos = [
+                item for item in preview.context["resultados"]
+                if item.tipo_registro == "OTRAS" and item.tipo_hora == "HS ARTICULO"
+            ]
+            self.assertEqual(
+                [(item.fecha, item.cantidad) for item in articulos],
+                [
+                    (date(2026, 10, 19), Decimal("2.00")),
+                    (date(2026, 10, 20), Decimal("1.00")),
+                ],
+            )
+
+    def test_article_can_be_calculated_as_an_independent_other_load(self):
+        with self.Session() as db:
+            usuario = Usuario(
+                nombre="Sara", apellido="SAL", username="sal-articulo-independiente",
+                hashed_password="x", origen="AD", status=True, convenio="SAL",
+            )
+            usuario.roles.append(UsuarioRol(rol="TECNICA", perfil="USUARIO"))
+            db.add_all([
+                usuario,
+                ReglaHora(convenio="SAL", tipo_dia="TODOS", tipo_hora="HS ARTICULO"),
+            ])
+            db.commit()
+            request = Request({
+                "type": "http", "method": "POST", "path": "/solicitudes/procesar",
+                "headers": [], "app": app,
+                "session": {"user": {
+                    "id": usuario.id,
+                    "active_assignment_id": usuario.roles[0].id_rol,
+                }},
+            })
+
+            preview = procesar_solicitud(
+                request=request, usuario_id=usuario.id, fecha=None,
+                tipo_registro="OTRAS", tipo_otra_carga="HS ARTICULO",
+                articulo_fin_fecha=date(2026, 10, 19),
+                articulo_fin_hora=time(2),
+                articulo_inicio_fecha=date(2026, 10, 19),
+                articulo_inicio_hora=time(8),
+                observaciones="Descanso reducido por cobertura", db=db,
+            )
+
+            resultado = preview.context["resultados"][0]
+            self.assertEqual(resultado.tipo_hora, "HS ARTICULO")
+            self.assertEqual(resultado.fecha, date(2026, 10, 19))
+            self.assertEqual(resultado.cantidad, Decimal("6.00"))
+            self.assertIn("Descanso reducido", preview.context["observaciones_resultados"][0])
+            self.assertIn("Fin de jornada anterior", preview.context["observaciones_resultados"][0])
+
     def test_worked_day_without_reimbursement_saves_compensatory_date(self):
         with self.Session() as db:
             usuario = Usuario(
@@ -1484,6 +1755,46 @@ class ReintegroTests(unittest.TestCase):
                 HoraExtra.id == approved_meal.id,
                 HoraExtra.estado == "APROBADA",
             ).count(), 1)
+
+    def test_approved_meals_keep_rrhh_as_authorizer(self):
+        with self.Session() as db:
+            rrhh = Usuario(
+                nombre="Rita", apellido="RRHH", username="rrhh-comidas",
+                hashed_password="x", origen="AD", convenio="SAT", status=True,
+            )
+            empleado = Usuario(
+                nombre="Ana", apellido="SAT", username="sat-autorizada",
+                hashed_password="x", origen="AD", convenio="SAT", status=True,
+            )
+            db.add_all([
+                rrhh, empleado,
+                ReglaHora(convenio="SAT", tipo_dia="TODOS", tipo_hora="MERIENDA"),
+                ReglaHora(convenio="SAT", tipo_dia="TODOS", tipo_hora="COMIDA"),
+            ])
+            db.flush()
+            db.add(HoraExtra(
+                usuario_id=empleado.id, fecha=date(2026, 10, 10),
+                hora_inicio=time(18), hora_fin=time(22),
+                horas_totales=Decimal("4"), tipo_dia="HABIL",
+                tipo_hora="50", tipo_registro="HORAS", estado="APROBADA",
+                aprobado_por=rrhh.id,
+            ))
+            db.flush()
+            recalcular_conceptos_jornada_estado(
+                empleado.id, date(2026, 10, 10), db, "APROBADA",
+                aprobado_por=rrhh.id,
+            )
+            db.flush()
+            derivados = db.query(HoraExtra).filter(
+                HoraExtra.usuario_id == empleado.id,
+                HoraExtra.tipo_registro == "OTRAS",
+            ).all()
+            self.assertEqual(
+                sorted((item.tipo_hora, item.cantidad) for item in derivados),
+                [("COMIDA", Decimal("1.00")), ("MERIENDA", Decimal("2.00"))],
+            )
+            self.assertTrue(all(item.estado == "APROBADA" for item in derivados))
+            self.assertTrue(all(item.aprobado_por == rrhh.id for item in derivados))
 
     def test_meals_only_use_concepts_configured_for_the_user_convention(self):
         with self.Session() as db:

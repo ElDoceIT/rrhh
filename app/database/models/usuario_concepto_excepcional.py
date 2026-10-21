@@ -1,6 +1,7 @@
 from datetime import date, datetime
+from decimal import Decimal
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Text
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Numeric, Text
 from sqlalchemy.dialects.mysql import INTEGER
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -25,6 +26,9 @@ class UsuarioConceptoExcepcional(Base):
     fecha_desde: Mapped[date] = mapped_column(Date, nullable=False)
     fecha_hasta: Mapped[date | None] = mapped_column(Date, nullable=True)
     activo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    cantidad_asignada: Mapped[Decimal | None] = mapped_column(
+        Numeric(8, 2), nullable=True,
+    )
     observacion: Mapped[str | None] = mapped_column(Text, nullable=True)
     asignado_por: Mapped[int | None] = mapped_column(
         INTEGER(unsigned=True), ForeignKey("usuarios.id", ondelete="SET NULL"), nullable=True,

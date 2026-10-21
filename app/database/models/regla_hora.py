@@ -1,6 +1,7 @@
 from datetime import time
+from decimal import Decimal
 
-from sqlalchemy import Boolean, String, Text, Time
+from sqlalchemy import Boolean, Numeric, String, Text, Time
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database.connection import Base
@@ -27,6 +28,16 @@ class ReglaHora(Base):
     tipo_hora: Mapped[str] = mapped_column(
         String(40),
         nullable=False,
+    )
+
+    modalidad_carga: Mapped[str | None] = mapped_column(
+        String(20),
+        nullable=True,
+    )
+
+    cantidad_predeterminada: Mapped[Decimal | None] = mapped_column(
+        Numeric(8, 2),
+        nullable=True,
     )
 
     hora_nocturna_desde: Mapped[time | None] = mapped_column(

@@ -1,0 +1,11 @@
+<section class="article-calculator article-calculation-row other-only-field hidden" data-article-other-calculator>
+  <div class="article-row-heading"><strong>Descanso entre jornadas</strong></div>
+  <p class="article-help">Indicá cuándo terminó una jornada y cuándo comenzó la siguiente. El sistema calculará las horas que faltaron para completar 12 horas de descanso.</p>
+  <div class="article-time-fields">
+    <label class="field"><span>Fin de jornada anterior · Fecha *</span><input type="date" name="articulo_fin_fecha" data-article-end-date {% if fecha_minima %}min="{{ fecha_minima }}"{% endif %} {% if fecha_maxima %}max="{{ fecha_maxima }}"{% endif %} required disabled></label>
+    <label class="field"><span>Hora *</span><span class="time-select-control article-time-control" data-article-time-control><select data-article-hour required disabled aria-label="Hora de fin de jornada"><option value="" selected disabled>Hora</option>{% for hour in range(24) %}<option value="{{ '%02d'|format(hour) }}">{{ '%02d'|format(hour) }}</option>{% endfor %}</select><b>:</b><select data-article-minute required disabled aria-label="Minutos de fin de jornada"><option value="00">00</option><option value="30">30</option></select><input type="hidden" name="articulo_fin_hora" data-article-end-time disabled></span></label>
+    <label class="field"><span>Inicio de jornada siguiente · Fecha *</span><input type="date" name="articulo_inicio_fecha" data-article-next-date required disabled></label>
+    <label class="field"><span>Hora *</span><span class="time-select-control article-time-control" data-article-time-control><select data-article-hour required disabled aria-label="Hora de inicio de jornada"><option value="" selected disabled>Hora</option>{% for hour in range(24) %}<option value="{{ '%02d'|format(hour) }}">{{ '%02d'|format(hour) }}</option>{% endfor %}</select><b>:</b><select data-article-minute required disabled aria-label="Minutos de inicio de jornada"><option value="00">00</option><option value="30">30</option></select><input type="hidden" name="articulo_inicio_hora" data-article-next-time disabled></span></label>
+  </div>
+  <div class="info-strip" data-article-result>Completá ambos momentos para calcular las HS ARTICULO.</div>
+</section>
