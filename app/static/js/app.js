@@ -59,20 +59,30 @@ document.querySelectorAll(".reintegro-select").forEach((select) => {
 function updateAutomaticDraftRows() {
   document.querySelectorAll("[data-auto-row]").forEach((row) => {
     const key = row.dataset.autoKey;
-    const sources = Array.from(document.querySelectorAll("[data-auto-source]"))
-      .filter((source) => source.dataset.autoKey === key);
+    const isNocturnal = row.dataset.autoMode === "NOCTURNIDAD";
+    const sources = Array.from(document.querySelectorAll(
+      isNocturnal ? "[data-night-source]" : "[data-auto-source]",
+    )).filter((source) => (
+      isNocturnal ? source.dataset.nightKey : source.dataset.autoKey
+    ) === key);
     const draftHours = sources.reduce(
-      (total, source) => total + Number(source.dataset.autoHours || 0), 0,
+      (total, source) => total + Number(
+        isNocturnal ? source.dataset.nightHours || 0 : source.dataset.autoHours || 0,
+      ), 0,
     );
     const baseHours = Number(row.dataset.autoBaseHours || 0);
     const divisor = Number(row.dataset.autoDivisor || 1);
-    const quantity = Math.floor((baseHours + draftHours) / divisor);
+    const quantity = isNocturnal
+      ? baseHours + draftHours
+      : Math.floor((baseHours + draftHours) / divisor);
     row.classList.toggle("hidden", draftHours <= 0 || quantity <= 0);
     const quantityElement = row.querySelector("[data-auto-quantity]");
-    if (quantityElement) quantityElement.textContent = String(quantity);
+    if (quantityElement) quantityElement.textContent = isNocturnal
+      ? quantity.toLocaleString("es-AR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+      : String(quantity);
     const observation = row.querySelector("[data-auto-observation]");
     if (observation) {
-      observation.textContent = `Cálculo automático sobre ${(baseHours + draftHours).toLocaleString("es-AR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} horas extras.`;
+      observation.textContent = `Cálculo automático sobre ${(baseHours + draftHours).toLocaleString("es-AR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} horas ${isNocturnal ? "nocturnas" : "extras"}.`;
     }
   });
 }

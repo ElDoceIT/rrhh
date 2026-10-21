@@ -4,7 +4,7 @@ from datetime import date, time
 from decimal import Decimal
 from unittest.mock import patch
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 from starlette.requests import Request
@@ -49,6 +49,7 @@ from app.main import (
     convenios_visibles_para_reglas,
     confirmar_solicitud,
     conceptos_automaticos_borrador,
+    conceptos_exportables_hora,
     detalle_exportacion_rrhh,
     descripcion_concepto_regla,
     encode_carga,
@@ -57,11 +58,16 @@ from app.main import (
     expandir_ids_con_jornadas_pendientes,
     filas_exportacion_rrhh,
     fechas_texto_liquidacion,
+    generar_precargas_autorizadas,
+    generar_pack_precargas_autorizadas,
     ids_habilitados_para_confirmar,
     limites_fecha_carga_usuario,
     nombre_concepto_liquidacion,
     obtener_autorizador,
+    opciones_periodos_precarga,
+    periodos_vigencia_precarga,
     procesar_solicitud,
+    recalcular_switcher_nocturnidad_estado,
     recalcular_conceptos_jornada_pendiente,
     recalcular_conceptos_jornada_estado,
     rechazar_horas,
@@ -156,6 +162,8 @@ class LocalAuthTests(unittest.TestCase):
         self.assertNotIn('RRHH:{steps:[', sat_html)
         self.assertNotIn('JEFATURA:{steps:[', sat_html)
         self.assertIn('start("SAT")', sat_html)
+        self.assertIn("if (tutorial) tutorial.steps.splice", sat_html)
+        self.assertNotIn("data[key].steps.splice", sat_html)
 
         admin_html = tutorial_html_for_key("ADMIN")
         self.assertIn('SAT:{steps:[', admin_html)
@@ -352,6 +360,261 @@ class LocalAuthTests(unittest.TestCase):
                 "Plus", "PLUS", "CARGA_POR_DIA", None,
                 None, None, True, True,
             )
+
+    def test_authorized_preload_generates_one_approved_row_per_payroll_period(self):
+        with self.Session() as db:
+            contratacion = TipoContratacion(contratacion="Nómina")
+            usuario = Usuario(
+                nombre="Paula", apellido="Precarga", username="paula-precarga",
+                hashed_password="x", origen="LOCAL", status=True, convenio="SAT",
+                tipo_contratacion=contratacion,
+            )
+            aprobador = Usuario(
+                nombre="Rita", apellido="RRHH", username="rita-rrhh",
+                hashed_password="x", origen="LOCAL", status=True, convenio="SAT",
+            )
+            concepto = ConceptoExcepcional(
+                nombre="Pack mensual 50", codigo="PACK_50",
+                tipo="PRECARGA_PERIODO", tipo_hora_destino="50", activo=True,
+                requiere_observacion=False, requiere_autorizacion=False,
+            )
+            db.add_all([usuario, aprobador, concepto])
+            db.flush()
+            db.add(Feriado(
+                fecha=date(2026, 9, 16), observacion="Feriado de prueba",
+                devuelve=True,
+            ))
+            asignacion = UsuarioConceptoExcepcional(
+                usuario_id=usuario.id,
+                concepto_excepcional_id=concepto.id_concepto_excepcional,
+                fecha_desde=date(2026, 9, 16), fecha_hasta=date(2026, 11, 15),
+                cantidad_asignada=Decimal("3.00"), activo=True,
+                observacion="Beneficio mensual", asignado_por=aprobador.id,
+            )
+            db.add(asignacion)
+            db.flush()
+
+            self.assertEqual(
+                periodos_vigencia_precarga(
+                    usuario, asignacion.fecha_desde, asignacion.fecha_hasta,
+                ),
+                [
+                    (date(2026, 9, 16), date(2026, 10, 15)),
+                    (date(2026, 10, 16), date(2026, 11, 15)),
+                ],
+            )
+            self.assertEqual(
+                generar_precargas_autorizadas(
+                    asignacion, concepto, usuario, aprobador.id, db,
+                ),
+                2,
+            )
+            db.flush()
+            precargas = list(db.scalars(
+                select(HoraExtra)
+                .where(HoraExtra.usuario_id == usuario.id)
+                .order_by(HoraExtra.fecha)
+            ))
+            self.assertEqual([item.fecha for item in precargas], [
+                date(2026, 9, 16), date(2026, 10, 16),
+            ])
+            self.assertTrue(all(item.tipo_registro == "PRECARGA_AUTORIZADA" for item in precargas))
+            self.assertTrue(all(item.estado == "APROBADA" for item in precargas))
+            self.assertTrue(all(item.hora_inicio is None and item.hora_fin is None for item in precargas))
+            self.assertTrue(all(item.horas_totales is None for item in precargas))
+            self.assertTrue(all(item.horas_nocturnas == Decimal("0.00") for item in precargas))
+            self.assertTrue(all(item.tipo_hora == "50" for item in precargas))
+            self.assertTrue(all(item.cantidad == Decimal("3.00") for item in precargas))
+            self.assertFalse(any(item.tipo_registro == "DIA_TRABAJADO" for item in precargas))
+            self.assertFalse(any(item.tipo_hora == "DOMINGO" for item in precargas))
+            self.assertEqual(
+                conceptos_exportables_hora(precargas[0]),
+                [("Horas extras al 50%", Decimal("3.00"))],
+            )
+
+            self.assertEqual(
+                generar_precargas_autorizadas(
+                    asignacion, concepto, usuario, aprobador.id, db,
+                ),
+                0,
+            )
+            self.assertEqual(db.scalar(select(func.count(HoraExtra.id))), 2)
+
+    def test_preload_pack_uses_general_concept_without_exceptional_concept(self):
+        with self.Session() as db:
+            contratacion = TipoContratacion(contratacion="Monotributo")
+            usuario = Usuario(
+                nombre="Pablo", apellido="Pack", username="pablo-pack",
+                hashed_password="x", origen="LOCAL", status=True,
+                convenio="CISPREN", tipo_contratacion=contratacion,
+            )
+            aprobador = Usuario(
+                nombre="Ana", apellido="Admin", username="ana-admin-pack",
+                hashed_password="x", origen="LOCAL", status=True,
+                convenio="SAT",
+            )
+            db.add_all([usuario, aprobador])
+            db.flush()
+
+            creadas = generar_pack_precargas_autorizadas(
+                usuario, "100", Decimal("4.00"),
+                date(2026, 9, 10), date(2026, 10, 20),
+                "Pack acordado", aprobador.id, db,
+            )
+            db.flush()
+
+            self.assertEqual(creadas, 2)
+            precargas = list(db.scalars(
+                select(HoraExtra)
+                .where(HoraExtra.usuario_id == usuario.id)
+                .order_by(HoraExtra.fecha)
+            ))
+            self.assertEqual(
+                [item.fecha for item in precargas],
+                [date(2026, 9, 1), date(2026, 10, 1)],
+            )
+            self.assertTrue(all(item.concepto_excepcional_id is None for item in precargas))
+            self.assertTrue(all(item.concepto_excepcional_nombre is None for item in precargas))
+            self.assertTrue(all(item.tipo_hora == "100" for item in precargas))
+            self.assertTrue(all(item.estado == "APROBADA" for item in precargas))
+
+    def test_preload_period_options_use_exact_contract_boundaries(self):
+        opciones = opciones_periodos_precarga(
+            date(2026, 10, 21), meses_anteriores=0, meses_futuros=0,
+        )
+        self.assertEqual(opciones["nomina"], [{
+            "valor": "2026-10-16",
+            "etiqueta": "16/10/2026 al 15/11/2026",
+        }])
+        self.assertEqual(opciones["calendario"], [{
+            "valor": "2026-10-01",
+            "etiqueta": "01/10/2026 al 31/10/2026",
+        }])
+        antes_del_corte = opciones_periodos_precarga(
+            date(2026, 10, 10), meses_anteriores=0, meses_futuros=0,
+        )
+        self.assertEqual(antes_del_corte["nomina"][0]["valor"], "2026-09-16")
+        opciones_anuales = opciones_periodos_precarga(date(2026, 10, 21))
+        self.assertEqual(len(opciones_anuales["nomina"]), 12)
+        self.assertEqual(len(opciones_anuales["calendario"]), 12)
+
+    def test_switcher_nocturnidad_accumulates_assigned_night_hours(self):
+        with self.Session() as db:
+            usuario = Usuario(
+                nombre="Nora", apellido="Noche", username="nora-switcher",
+                hashed_password="x", origen="LOCAL", status=True, convenio="SAT",
+            )
+            concepto = ConceptoExcepcional(
+                nombre="switcher_nocturnidad",
+                codigo="SWITCHER_NOCTURNIDAD",
+                tipo="DERIVADO_NOCTURNIDAD",
+                descripcion="Automático",
+                activo=True,
+                requiere_observacion=False,
+                requiere_autorizacion=True,
+            )
+            db.add_all([usuario, concepto])
+            db.flush()
+            db.add(UsuarioConceptoExcepcional(
+                usuario_id=usuario.id,
+                concepto_excepcional_id=concepto.id_concepto_excepcional,
+                fecha_desde=date(2026, 10, 1),
+                fecha_hasta=date(2026, 10, 31),
+                activo=True,
+                observacion="Prueba",
+            ))
+            fuentes = [
+                HoraExtra(
+                    usuario_id=usuario.id, fecha=date(2026, 10, 20),
+                    hora_inicio=time(21), hora_fin=time(23, 30),
+                    horas_totales=Decimal("2.50"),
+                    horas_nocturnas=Decimal("2.50"), tipo_dia="HABIL",
+                    tipo_hora="50", tipo_registro="HORAS", estado="PENDIENTE",
+                ),
+                HoraExtra(
+                    usuario_id=usuario.id, fecha=date(2026, 10, 20),
+                    hora_inicio=time(23, 30), hora_fin=time(0),
+                    cantidad=Decimal("0.50"), tipo_dia="HABIL",
+                    tipo_hora="NOCTURNAS EN JORNADA", tipo_registro="OTRAS",
+                    estado="PENDIENTE",
+                ),
+            ]
+            db.add_all(fuentes)
+            db.flush()
+
+            recalcular_switcher_nocturnidad_estado(
+                usuario.id, date(2026, 10, 20), db, "PENDIENTE",
+            )
+            db.flush()
+            switchers = list(db.scalars(select(HoraExtra).where(
+                HoraExtra.usuario_id == usuario.id,
+                HoraExtra.tipo_hora == "SWITCHER_NOCTURNIDAD",
+            )))
+            self.assertEqual(len(switchers), 1)
+            self.assertEqual(switchers[0].cantidad, Decimal("3.00"))
+            self.assertEqual(switchers[0].concepto_excepcional_id, concepto.id_concepto_excepcional)
+            self.assertEqual(switchers[0].concepto_excepcional_nombre, "switcher_nocturnidad")
+            self.assertEqual(switchers[0].tipo_dia, "HABIL")
+            self.assertEqual(
+                set(expandir_ids_con_jornadas_pendientes([fuentes[0].id], db)),
+                {fuentes[0].id, fuentes[1].id, switchers[0].id},
+            )
+
+            recalcular_switcher_nocturnidad_estado(
+                usuario.id, date(2026, 10, 20), db, "PENDIENTE",
+            )
+            db.flush()
+            self.assertEqual(len(list(db.scalars(select(HoraExtra).where(
+                HoraExtra.usuario_id == usuario.id,
+                HoraExtra.tipo_hora == "SWITCHER_NOCTURNIDAD",
+            )))), 1)
+            fuentes[0].horas_nocturnas = Decimal("0.00")
+            fuentes[1].cantidad = Decimal("0.00")
+            db.flush()
+            recalcular_switcher_nocturnidad_estado(
+                usuario.id, date(2026, 10, 20), db, "PENDIENTE",
+            )
+            db.flush()
+            self.assertIsNone(db.scalar(select(HoraExtra).where(
+                HoraExtra.usuario_id == usuario.id,
+                HoraExtra.tipo_hora == "SWITCHER_NOCTURNIDAD",
+            )))
+
+    def test_switcher_nocturnidad_requires_assignment_valid_on_load_date(self):
+        with self.Session() as db:
+            usuario = Usuario(
+                nombre="Nora", apellido="Fuera", username="nora-sin-vigencia",
+                hashed_password="x", origen="LOCAL", status=True, convenio="SAT",
+            )
+            concepto = ConceptoExcepcional(
+                nombre="switcher_nocturnidad", codigo="SWITCHER_NOCTURNIDAD",
+                tipo="DERIVADO_NOCTURNIDAD", activo=True,
+                requiere_observacion=False, requiere_autorizacion=True,
+            )
+            db.add_all([usuario, concepto])
+            db.flush()
+            db.add(UsuarioConceptoExcepcional(
+                usuario_id=usuario.id,
+                concepto_excepcional_id=concepto.id_concepto_excepcional,
+                fecha_desde=date(2026, 11, 1), activo=True, observacion="Futura",
+            ))
+            db.add(HoraExtra(
+                usuario_id=usuario.id, fecha=date(2026, 10, 20),
+                hora_inicio=time(21), hora_fin=time(23),
+                horas_totales=Decimal("2.00"), horas_nocturnas=Decimal("2.00"),
+                tipo_dia="HABIL", tipo_hora="50", tipo_registro="HORAS",
+                estado="PENDIENTE",
+            ))
+            db.flush()
+
+            recalcular_switcher_nocturnidad_estado(
+                usuario.id, date(2026, 10, 20), db, "PENDIENTE",
+            )
+            db.flush()
+            self.assertIsNone(db.scalar(select(HoraExtra).where(
+                HoraExtra.usuario_id == usuario.id,
+                HoraExtra.tipo_hora == "SWITCHER_NOCTURNIDAD",
+            )))
 
     def test_article_concept_is_enabled_by_convention_rule(self):
         with self.Session() as db:
@@ -1885,14 +2148,59 @@ class ReintegroTests(unittest.TestCase):
                 ),
             ]
 
-            conceptos, claves = conceptos_automaticos_borrador(resultados, db)
+            conceptos, claves, claves_nocturnidad = conceptos_automaticos_borrador(resultados, db)
 
             self.assertEqual(claves, [
                 f"{user.id}:2026-08-20", f"{user.id}:2026-08-20",
             ])
+            self.assertEqual(claves_nocturnidad, [None, None])
             self.assertEqual(
                 [(item["tipo_hora"], item["cantidad"]) for item in conceptos],
                 [("MERIENDA", 3), ("COMIDA", 2)],
+            )
+
+    def test_draft_preview_projects_switcher_nocturnidad(self):
+        with self.Session() as db:
+            user = Usuario(
+                nombre="Ana", apellido="SAT", username="sat-preview-switcher",
+                hashed_password="x", origen="AD", convenio="SAT", status=True,
+            )
+            concept = ConceptoExcepcional(
+                nombre="switcher_nocturnidad", codigo="SWITCHER_NOCTURNIDAD",
+                tipo="DERIVADO_NOCTURNIDAD", activo=True,
+                requiere_observacion=False, requiere_autorizacion=True,
+            )
+            db.add_all([
+                user, concept,
+                ReglaHora(
+                    convenio="SAT", tipo_dia="HABIL", tipo_hora="50",
+                    hora_nocturna_desde=time(21), hora_nocturna_hasta=time(6),
+                ),
+            ])
+            db.flush()
+            db.add(UsuarioConceptoExcepcional(
+                usuario_id=user.id,
+                concepto_excepcional_id=concept.id_concepto_excepcional,
+                fecha_desde=date(2026, 8, 1), activo=True, observacion="Prueba",
+            ))
+            db.flush()
+            resultados = [calcular_resultado_horas_extra(
+                user.id, date(2026, 8, 20), time(21), time(23), db,
+            )]
+
+            conceptos, _, claves_nocturnidad = conceptos_automaticos_borrador(
+                resultados, db,
+            )
+
+            switcher = next(
+                item for item in conceptos
+                if item["tipo_hora"] == "switcher_nocturnidad"
+            )
+            self.assertEqual(switcher["cantidad"], Decimal("2.00"))
+            self.assertEqual(switcher["modo"], "NOCTURNIDAD")
+            self.assertEqual(
+                claves_nocturnidad,
+                [f"nocturna:{user.id}:2026-08-20"],
             )
 
     def test_equal_times_are_rejected(self):
