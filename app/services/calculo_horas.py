@@ -320,11 +320,6 @@ def calcular_resultado_otra_carga(
     tipo_hora_normalizado = tipo_hora.strip().upper()
     if tipo_hora_normalizado in {"COMIDA", "MERIENDA", "DOMINGO"}:
         raise CalculoHorasError("El tipo de carga seleccionado no está permitido.")
-    if (
-        tipo_hora_normalizado == "HS ARTICULO"
-        and usuario.convenio.strip().upper() != "SAT"
-    ):
-        raise CalculoHorasError("HS ARTICULO sólo está habilitado para el convenio SAT.")
     if tipo_hora_normalizado == "EXTERIOR PRENSA" and cantidad not in {
         Decimal("3"), Decimal("6"),
     }:
@@ -380,7 +375,7 @@ def calcular_resultado_concepto_excepcional(
     concepto = db.get(ConceptoExcepcional, concepto_id)
     if concepto is None or not concepto.activo:
         raise CalculoHorasError("El concepto excepcional no existe o está inactivo.")
-    if concepto.tipo != "CARGA_MANUAL":
+    if concepto.tipo not in {"CARGA_MANUAL", "CARGA_POR_DIA"}:
         raise CalculoHorasError("El concepto seleccionado es un permiso y no una carga.")
     asignacion = db.scalar(
         select(UsuarioConceptoExcepcional).where(

@@ -21,10 +21,12 @@
       <div><span class="section-kicker">Reglas de cálculo</span><h2>{% if regla_edicion %}Editar regla #{{ regla_edicion.id }}{% else %}Nueva regla{% endif %}</h2></div>
       {% if regla_edicion %}<div class="form-actions"><a class="ui-btn" href="/configuracion/parametros"><i class="bi bi-x-lg"></i> Cancelar edición</a><form method="post" action="/configuracion/parametros/reglas/{{ regla_edicion.id }}/eliminar" class="inline-form" onsubmit="return confirm('¿Eliminar la regla {{ regla_edicion.convenio }} · {{ regla_edicion.tipo_dia }} · {{ regla_edicion.tipo_hora }}? Dejará de estar disponible para cargas nuevas.');"><button class="ui-btn danger-btn" type="submit"><i class="bi bi-trash"></i> Borrar regla</button></form></div>{% endif %}
     </div>
-    <form method="post" action="{% if regla_edicion %}/configuracion/parametros/reglas/{{ regla_edicion.id }}{% else %}/configuracion/parametros/reglas{% endif %}" class="rule-form">
+    <form method="post" action="{% if regla_edicion %}/configuracion/parametros/reglas/{{ regla_edicion.id }}{% else %}/configuracion/parametros/reglas{% endif %}" class="rule-form" data-rule-form>
       <label class="field"><span>Convenio <b>*</b></span><select name="convenio" required><option value="" disabled {% if not regla_edicion %}selected{% endif %}>Seleccionar</option>{% for convenio in convenios_disponibles %}<option value="{{ convenio }}" {% if regla_edicion and regla_edicion.convenio|upper == convenio %}selected{% endif %}>{{ convenio }}</option>{% endfor %}</select></label>
-      <label class="field"><span>Tipo de día <b>*</b></span><select name="tipo_dia" required><option value="" disabled {% if not regla_edicion %}selected{% endif %}>Seleccionar</option>{% for tipo_dia in ('HABIL', 'FERIADO', 'FRANCO', 'TODOS') %}<option value="{{ tipo_dia }}" {% if regla_edicion and regla_edicion.tipo_dia|upper|replace('Á', 'A') == tipo_dia %}selected{% endif %}>{{ 'HÁBIL' if tipo_dia == 'HABIL' else tipo_dia }}</option>{% endfor %}</select></label>
+      <label class="field"><span>Tipo de día <b>*</b></span><select name="tipo_dia" required data-rule-day><option value="" disabled {% if not regla_edicion %}selected{% endif %}>Seleccionar</option>{% for tipo_dia in ('HABIL', 'FERIADO', 'FRANCO', 'TODOS') %}<option value="{{ tipo_dia }}" {% if regla_edicion and regla_edicion.tipo_dia|upper|replace('Á', 'A') == tipo_dia %}selected{% endif %}>{{ 'HÁBIL' if tipo_dia == 'HABIL' else tipo_dia }}</option>{% endfor %}</select></label>
       <label class="field"><span>Tipo de hora <b>*</b></span><input name="tipo_hora" maxlength="20" required placeholder="Ej.: 50%" value="{{ regla_edicion.tipo_hora if regla_edicion else '' }}"></label>
+      <label class="field"><span>Modalidad de carga</span><select name="modalidad_carga" data-rule-mode><option value="ACTUAL" {% if not regla_edicion or not regla_edicion.modalidad_carga %}selected{% endif %}>Comportamiento actual</option><option value="CARGA_POR_DIA" {% if regla_edicion and regla_edicion.modalidad_carga == 'CARGA_POR_DIA' %}selected{% endif %}>Carga por día</option><option value="CARGA_MANUAL" {% if regla_edicion and regla_edicion.modalidad_carga == 'CARGA_MANUAL' %}selected{% endif %}>Cantidad manual</option></select><small>Las modalidades especiales se usan únicamente con el tipo de día TODOS.</small></label>
+      <label class="field{% if not regla_edicion or regla_edicion.modalidad_carga != 'CARGA_POR_DIA' %} hidden{% endif %}" data-rule-default-quantity><span>Cantidad por día <b>*</b></span><input type="number" name="cantidad_predeterminada" min="0.01" step="0.01" value="{{ regla_edicion.cantidad_predeterminada if regla_edicion and regla_edicion.cantidad_predeterminada is not none else '' }}" {% if not regla_edicion or regla_edicion.modalidad_carga != 'CARGA_POR_DIA' %}disabled{% endif %}><small>Se aplicará a cada fecha seleccionada.</small></label>
       <label class="field"><span>Nocturna desde</span><input type="time" name="hora_nocturna_desde" value="{{ regla_edicion.hora_nocturna_desde.strftime('%H:%M') if regla_edicion and regla_edicion.hora_nocturna_desde else '' }}"></label>
       <label class="field"><span>Nocturna hasta</span><input type="time" name="hora_nocturna_hasta" value="{{ regla_edicion.hora_nocturna_hasta.strftime('%H:%M') if regla_edicion and regla_edicion.hora_nocturna_hasta else '' }}"></label>
       <label class="check-field"><input type="checkbox" name="permite_reintegro" {% if regla_edicion and regla_edicion.permite_reintegro %}checked{% endif %}><span><strong>Permite reintegro</strong><small>Habilita el reintegro asociado a esta regla.</small></span></label>
@@ -37,9 +39,10 @@
     <div class="section-heading section-heading-pill"><div><span class="section-kicker">Reglas configuradas</span><h2>Listado de reglas</h2></div><span class="count-chip">{{ reglas|length }}</span></div>
     {% if reglas %}
     <div class="table-wrap"><table class="ui-table">
-      <thead><tr><th>Convenio</th><th>Tipo de día</th><th>Tipo de hora</th><th>Franja nocturna</th><th>Reintegro</th><th>Observaciones</th><th class="actions-column">Acciones</th></tr></thead>
+      <thead><tr><th>Convenio</th><th>Tipo de día</th><th>Tipo de hora</th><th>Modalidad</th><th>Franja nocturna</th><th>Reintegro</th><th>Observaciones</th><th class="actions-column">Acciones</th></tr></thead>
       <tbody>{% for regla in reglas %}<tr>
         <td data-label="Convenio"><strong>{{ regla.convenio }}</strong></td><td data-label="Tipo de día">{{ 'HÁBIL' if regla.tipo_dia|upper|replace('Á', 'A') == 'HABIL' else regla.tipo_dia }}</td><td data-label="Tipo de hora"><span class="type-chip">{{ regla.tipo_hora }}</span></td>
+        <td data-label="Modalidad">{% if regla.modalidad_carga == 'CARGA_POR_DIA' and regla.cantidad_predeterminada is not none %}<span class="status-chip success-chip">Por día · {{ '%.2f'|format(regla.cantidad_predeterminada) }}</span>{% elif regla.modalidad_carga == 'CARGA_MANUAL' %}<span class="status-chip neutral-chip">Cantidad manual</span>{% else %}<span class="muted">Actual</span>{% endif %}</td>
         <td data-label="Franja nocturna">{% if regla.hora_nocturna_desde or regla.hora_nocturna_hasta %}{{ regla.hora_nocturna_desde.strftime('%H:%M') if regla.hora_nocturna_desde else '—' }} a {{ regla.hora_nocturna_hasta.strftime('%H:%M') if regla.hora_nocturna_hasta else '—' }}{% else %}<span class="muted">Sin definir</span>{% endif %}</td>
         <td data-label="Reintegro">{% if regla.permite_reintegro %}<span class="status-chip success-chip"><i class="bi bi-check"></i> Sí</span>{% else %}<span class="status-chip neutral-chip">No</span>{% endif %}</td>
         <td data-label="Observaciones" class="observations">{{ regla.observaciones or '—' }}</td>
@@ -49,4 +52,29 @@
     {% else %}<div class="empty-state"><i class="bi bi-sliders"></i><strong>No hay reglas configuradas</strong><span>Completá el formulario para crear la primera regla.</span></div>{% endif %}
   </section>
 </div>
+<script>
+const ruleForm = document.querySelector('[data-rule-form]');
+if (ruleForm) {
+  const daySelect = ruleForm.querySelector('[data-rule-day]');
+  const modeSelect = ruleForm.querySelector('[data-rule-mode]');
+  const quantityField = ruleForm.querySelector('[data-rule-default-quantity]');
+  const quantityInput = quantityField?.querySelector('input');
+  const updateRuleMode = () => {
+    const supportsSpecialMode = daySelect?.value === 'TODOS';
+    Array.from(modeSelect?.options || []).forEach((option) => {
+      if (option.value !== 'ACTUAL') option.disabled = !supportsSpecialMode;
+    });
+    if (!supportsSpecialMode && modeSelect) modeSelect.value = 'ACTUAL';
+    const isDaily = supportsSpecialMode && modeSelect?.value === 'CARGA_POR_DIA';
+    quantityField?.classList.toggle('hidden', !isDaily);
+    if (quantityInput) {
+      quantityInput.disabled = !isDaily;
+      quantityInput.required = isDaily;
+    }
+  };
+  daySelect?.addEventListener('change', updateRuleMode);
+  modeSelect?.addEventListener('change', updateRuleMode);
+  updateRuleMode();
+}
+</script>
 {% endblock %}

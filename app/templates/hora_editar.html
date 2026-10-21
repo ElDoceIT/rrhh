@@ -1,22 +1,23 @@
 {% extends "base.html" %}
 {% from "components/time_select.html" import time_select %}
-{% block title %}Editar carga pendiente{% endblock %}
+{% block title %}Editar carga{% endblock %}
 {% block content %}
 <div class="container request-page">
-  <nav class="breadcrumb"><a href="/horas">Historial de cargas</a><i class="bi bi-chevron-right"></i><strong>Editar carga</strong></nav>
-  <header class="page-header"><div><span class="eyebrow">Carga pendiente</span><h1>Editar registro</h1><p>Sólo puede modificarse antes de su autorización o rechazo.</p></div></header>
+  <nav class="breadcrumb"><a href="{{ '/rrhh/horas-extras' if edicion_rrhh else '/horas' }}">{{ 'Seguimiento' if edicion_rrhh else 'Historial de cargas' }}</a><i class="bi bi-chevron-right"></i><strong>Editar carga</strong></nav>
+  <header class="page-header"><div><span class="eyebrow">{{ 'RRHH' if edicion_rrhh else 'Carga pendiente' }}</span><h1>Editar registro</h1><p>{{ 'La corrección quedará autorizada por RRHH.' if edicion_rrhh else 'Sólo puede modificarse antes de su autorización o rechazo.' }}</p></div></header>
   <section class="card form-card">
-    <form method="post" action="/horas/{{ hora.id }}/editar" class="request-form">
+    <form method="post" action="{{ '/rrhh/horas/' ~ hora.id ~ '/editar' if edicion_rrhh else '/horas/' ~ hora.id ~ '/editar' }}" class="request-form">
       <label class="field"><span>Fecha *</span><input type="date" name="fecha" required value="{{ hora.fecha.isoformat() }}" {% if fecha_minima %}min="{{ fecha_minima }}"{% endif %} {% if fecha_maxima %}max="{{ fecha_maxima }}"{% endif %}></label>
       {% if hora.tipo_registro == 'HORAS' or (hora.tipo_registro == 'OTRAS' and hora.tipo_hora|upper in ['NOCTURNAS EN JORNADA', 'HORAS NOCTURNAS EN JORNADA']) %}
       <label class="field"><span>Hora de inicio *</span>{{ time_select('hora_inicio', hora.hora_inicio.strftime('%H:%M')) }}</label>
       <label class="field"><span>Hora de finalización *</span>{{ time_select('hora_fin', hora.hora_fin.strftime('%H:%M')) }}</label>
       {% if hora.tipo_registro == 'OTRAS' %}<div class="info-strip"><i class="bi bi-moon-stars"></i><span>Se recalculará únicamente la nocturnidad incluida dentro de esta jornada.</span></div>{% endif %}
       {% elif hora.tipo_registro == 'DIA_TRABAJADO' %}<label class="field"><span>Hora de inicio *</span>{{ time_select('hora_inicio', hora.hora_inicio.strftime('%H:%M') if hora.hora_inicio else '') }}</label><label class="field"><span>Hora de finalización *</span>{{ time_select('hora_fin', hora.hora_fin.strftime('%H:%M') if hora.hora_fin else '') }}</label><div class="info-strip"><i class="bi bi-info-circle"></i><span>Si la fecha no es feriado, se considera automáticamente como franco.</span></div>
-      {% else %}<div class="info-strip"><i class="bi bi-info-circle"></i><span>Este registro solicita únicamente el reintegro del día.</span></div>{% endif %}
+      {% elif hora.tipo_registro == 'REINTEGRO' %}<div class="info-strip"><i class="bi bi-info-circle"></i><span>Este registro solicita únicamente el reintegro del día.</span></div>
+      {% elif edicion_rrhh and hora.tipo_registro in ['OTRAS', 'EXCEPCIONAL'] %}<label class="field"><span>Cantidad *</span><input type="number" name="cantidad" required min="0.5" step="0.5" value="{{ hora.cantidad or '' }}"></label>{% endif %}
       {% if hora.tipo_registro == 'DIA_TRABAJADO' and hora.fecha_descanso_compensatorio %}<label class="field"><span>Día previsto para tomar el franco o feriado *</span><input type="date" name="fecha_descanso_compensatorio" required value="{{ hora.fecha_descanso_compensatorio.isoformat() }}"></label>{% endif %}
       <label class="field request-observations"><span>Observaciones <b>*</b></span><textarea name="observaciones" rows="3" required>{{ hora.observaciones or '' }}</textarea></label>
-      <div class="request-actions"><a class="ui-btn" href="/horas">Cancelar</a><button class="ui-btn primary-btn" type="submit"><i class="bi bi-check-lg"></i> Guardar cambios</button></div>
+      <div class="request-actions"><a class="ui-btn" href="{{ '/rrhh/horas-extras' if edicion_rrhh else '/horas' }}">Cancelar</a><button class="ui-btn primary-btn" type="submit"><i class="bi bi-check-lg"></i> {{ 'Guardar y autorizar' if edicion_rrhh else 'Guardar cambios' }}</button></div>
     </form>
   </section>
 </div>

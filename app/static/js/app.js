@@ -289,7 +289,7 @@ document.querySelectorAll(".request-form").forEach((form) => {
   const holidays = new Set(
     (form.dataset.holidays || "").split(",").filter(Boolean),
   );
-  const defaultReimbursementHelp = "Si no lo solicitás, indicá debajo qué día vas a tomar.";
+  const defaultReimbursementHelp = "Si no lo solicitás, indicá qué día vas a tomar.";
   const defaultFrancoHelp = francoHelp?.textContent || "";
   const isSundaySat = () => {
     const convenio = (
@@ -361,11 +361,14 @@ document.querySelectorAll(".request-form").forEach((form) => {
 
   const updateRecordType = () => {
     const recordType = form.querySelector('input[name="tipo_registro"]:checked')?.value;
+    form.querySelector("[data-request-details]")?.classList.toggle("hidden", !recordType);
     const isHours = recordType === "HORAS";
     const isWorkedDay = recordType === "DIA_TRABAJADO";
     const isOther = recordType === "OTRAS";
     const isNocturnalJourney = isOther
       && (otherTypeSelect?.value || "").trim().toUpperCase() === "NOCTURNAS EN JORNADA";
+    const isDailyOther = isOther
+      && otherTypeSelect?.selectedOptions[0]?.dataset.loadMode === "CARGA_POR_DIA";
     const includesExtra = form.querySelector("[data-include-extra]")?.checked ?? false;
     const showsExtraTime = isHours;
     form.querySelectorAll(".hours-only-field").forEach((field) => {
@@ -399,7 +402,7 @@ document.querySelectorAll(".request-form").forEach((form) => {
         control.disabled = !isOther;
       });
     });
-    const allowMultipleDates = isHours || isNocturnalJourney;
+    const allowMultipleDates = isHours || isNocturnalJourney || isDailyOther;
     form.querySelector("[data-add-date]")?.classList.toggle("hidden", !allowMultipleDates);
     form.querySelector("[data-multi-date-help]")?.classList.toggle("hidden", !allowMultipleDates);
     form.querySelectorAll(".multi-load-date-field").forEach((field) => {
@@ -415,7 +418,8 @@ document.querySelectorAll(".request-form").forEach((form) => {
     );
     updateReimbursementAvailability(isWorkedDay);
     updateOtherQuantityMode();
-    const articleAvailable = isHours && currentConvention() === "SAT";
+    updateDateSelectionMode();
+    const articleAvailable = isHours && form.dataset.hsArticulo === "true";
     hoursArticle?.classList.toggle("hidden", !articleAvailable);
     setHoursArticleEnabled(
       articleAvailable
@@ -431,8 +435,8 @@ document.querySelectorAll(".request-form").forEach((form) => {
   const nocturnalStart = nocturnalFields?.querySelector('input[name="jornada_nocturna_inicio"]');
   const nocturnalEnd = nocturnalFields?.querySelector('input[name="jornada_nocturna_fin"]');
   const nocturnalPreview = nocturnalFields?.querySelector("[data-nocturnal-preview]");
-  const nocturnalMode = form.querySelector("[data-nocturnal-mode]");
-  const nocturnalPeriod = form.querySelector("[data-nocturnal-period]");
+  const dateMode = form.querySelector("[data-date-mode]");
+  const datePeriod = form.querySelector("[data-date-period]");
   const specificDates = form.querySelector("[data-specific-dates]");
   const hoursArticle = form.querySelector("[data-article-hours-calculator]");
   const otherArticle = form.querySelector("[data-article-other-calculator]");
@@ -443,7 +447,6 @@ document.querySelectorAll(".request-form").forEach((form) => {
   const journeyEndInput = form.querySelector("[data-journey-end-time]");
   const journeyStartDate = form.querySelector("[data-journey-start-date]");
   const journeyEndDate = form.querySelector("[data-journey-end-date]");
-  const workedSummary = form.querySelector("[data-worked-summary]");
   const workedExtraQuestion = form.querySelector("[data-worked-extra-question]");
   const workedExtraRange = form.querySelector("[data-worked-extra-range]");
   const workedExtraQuantity = form.querySelector('input[name="cantidad_horas_extra"]');
@@ -468,7 +471,6 @@ document.querySelectorAll(".request-form").forEach((form) => {
     if (crossesMidnight) dateValue.setDate(dateValue.getDate() + 1);
     if (journeyEndDate) journeyEndDate.value = isoLocalDate(dateValue);
     if (endMinutes === startMinutes) {
-      if (workedSummary) workedSummary.textContent = "La hora final debe ser distinta de la inicial.";
       if (workedExtraQuestion) workedExtraQuestion.textContent = "Elegí horas de inicio y finalización distintas.";
       return;
     }
@@ -476,9 +478,6 @@ document.querySelectorAll(".request-form").forEach((form) => {
     const totalHours = totalMinutes / 60;
     const convenio = currentConvention();
     const startDateObject = localDate(startDateValue);
-    const touchesSunday = convenio === "SAT" && (
-      startDateObject?.getDay() === 0 || (crossesMidnight && dateValue.getDay() === 0)
-    );
     const isWorkedDay = form.querySelector('input[name="tipo_registro"]:checked')?.value === "DIA_TRABAJADO";
     const includeExtraInput = form.querySelector("[data-include-extra]");
     const extraChoice = form.querySelector(".worked-extra-choice");
@@ -518,14 +517,6 @@ document.querySelectorAll(".request-form").forEach((form) => {
     } else {
       updateReimbursementAvailability(isWorkedDay);
     }
-    const dayLabel = holidays.has(startDateValue) ? "Feriado trabajado" : "Franco trabajado";
-    if (workedSummary) {
-      workedSummary.innerHTML = `
-        <span><i class="bi bi-calendar-check"></i> ${dayLabel}</span>
-        <span><i class="bi bi-clock"></i> Horario informado: ${totalHours.toLocaleString("es-AR")} h</span>
-        ${["SAT", "SAL", "CISPREN"].includes(convenio) ? '<span><i class="bi bi-moon-stars"></i> Las horas nocturnas se calcularán automáticamente</span>' : ""}
-        ${touchesSunday ? '<span><i class="bi bi-calendar-week"></i> Domingo trabajado SAT</span>' : ""}`;
-    }
     if (workedExtraQuestion && !shortWorkedDay) {
       workedExtraQuestion.textContent = `El horario informado abarca ${totalHours.toLocaleString("es-AR")} horas. ¿Hiciste horas extras?`;
     }
@@ -554,8 +545,13 @@ document.querySelectorAll(".request-form").forEach((form) => {
   const mainConceptDescription = form.querySelector("[data-main-concept-description]");
   const updateMainConceptDescription = () => {
     if (!mainConceptDescription) return;
-    mainConceptDescription.textContent = otherTypeSelect?.selectedOptions[0]?.dataset.description
+    const selected = otherTypeSelect?.selectedOptions[0];
+    const description = selected?.dataset.description
       || "Seleccioná un concepto para ver qué representa.";
+    const dailyQuantity = selected?.dataset.loadMode === "CARGA_POR_DIA"
+      ? ` Se cargará ${Number(selected.dataset.defaultQuantity).toLocaleString("es-AR")} por cada fecha.`
+      : "";
+    mainConceptDescription.textContent = description + dailyQuantity;
   };
   const updateOtherTypes = () => {
     if (!otherTypeSelect) return;
@@ -579,37 +575,27 @@ document.querySelectorAll(".request-form").forEach((form) => {
     const isExterior = (otherTypeSelect?.value || "").trim().toUpperCase() === "EXTERIOR PRENSA";
     const isArticle = (otherTypeSelect?.value || "").trim().toUpperCase() === "HS ARTICULO";
     const isNocturnalJourney = (otherTypeSelect?.value || "").trim().toUpperCase() === "NOCTURNAS EN JORNADA";
-    otherQuantityField?.classList.toggle("hidden", !isOther || isArticle || isNocturnalJourney);
+    const isDailyOther = otherTypeSelect?.selectedOptions[0]?.dataset.loadMode === "CARGA_POR_DIA";
+    otherQuantityField?.classList.toggle("hidden", !isOther || isArticle || isNocturnalJourney || isDailyOther);
     standardQuantity?.classList.toggle("hidden", isExterior);
     exteriorQuantity?.classList.toggle("hidden", !isExterior);
-    if (otherQuantity) otherQuantity.disabled = !isOther || isExterior || isArticle || isNocturnalJourney;
+    if (otherQuantity) otherQuantity.disabled = !isOther || isExterior || isArticle || isNocturnalJourney || isDailyOther;
     standardQuantity?.querySelectorAll("button").forEach((button) => {
-      button.disabled = !isOther || isExterior || isArticle || isNocturnalJourney;
+      button.disabled = !isOther || isExterior || isArticle || isNocturnalJourney || isDailyOther;
     });
     if (exteriorQuantity) exteriorQuantity.disabled = !isOther || !isExterior || isArticle;
     nocturnalFields?.classList.toggle("hidden", !isOther || !isNocturnalJourney);
-    nocturnalMode?.classList.toggle("hidden", !isOther || !isNocturnalJourney);
-    nocturnalMode?.querySelectorAll("input").forEach((input) => {
-      input.disabled = !isOther || !isNocturnalJourney;
-    });
-    nocturnalFields?.querySelectorAll("input").forEach((input) => {
-      input.disabled = !isOther || !isNocturnalJourney;
-      input.required = isOther && isNocturnalJourney
-        && ["jornada_nocturna_inicio", "jornada_nocturna_fin"].includes(input.name);
+    nocturnalFields?.querySelectorAll("input, select").forEach((control) => {
+      control.disabled = !isOther || !isNocturnalJourney;
+      control.required = isOther && isNocturnalJourney;
     });
     otherArticle?.classList.toggle("hidden", !isOther || !isArticle);
-    otherArticle?.querySelectorAll("input").forEach((input) => {
+    otherArticle?.querySelectorAll("input, select").forEach((input) => {
       input.disabled = !isOther || !isArticle;
-      input.required = isOther && isArticle;
+      if (!input.matches('input[type="hidden"]')) input.required = isOther && isArticle;
     });
-    const observation = mainObservations?.querySelector("textarea");
-    mainObservations?.classList.toggle("hidden", isOther && isArticle);
-    if (observation) {
-      observation.disabled = isOther && isArticle;
-      observation.required = !(isOther && isArticle);
-    }
     const allowMultipleDates = form.querySelector('input[name="tipo_registro"]:checked')?.value === "HORAS"
-      || (isOther && isNocturnalJourney);
+      || (isOther && (isNocturnalJourney || isDailyOther));
     form.querySelector("[data-add-date]")?.classList.toggle("hidden", !allowMultipleDates);
     form.querySelector("[data-multi-date-help]")?.classList.toggle("hidden", !allowMultipleDates);
     form.querySelectorAll(".multi-load-date-field").forEach((field) => {
@@ -618,33 +604,86 @@ document.querySelectorAll(".request-form").forEach((form) => {
         control.disabled = !allowMultipleDates;
       });
     });
-    updateNocturnalMode();
+    updateDateSelectionMode();
   };
 
-  function updateNocturnalMode() {
+  function updateDateSelectionMode() {
+    const isHours = form.querySelector('input[name="tipo_registro"]:checked')?.value === "HORAS";
     const isNocturnalJourney = form.querySelector('input[name="tipo_registro"]:checked')?.value === "OTRAS"
       && (otherTypeSelect?.value || "").trim().toUpperCase() === "NOCTURNAS EN JORNADA";
-    const mode = nocturnalMode?.querySelector('input[name="modo_nocturnas"]:checked')?.value || "FECHAS";
-    const usePeriod = isNocturnalJourney && mode === "PERIODO";
-    nocturnalPeriod?.classList.toggle("hidden", !usePeriod);
-    nocturnalPeriod?.querySelectorAll("input").forEach((input) => {
+    const isDailyOther = form.querySelector('input[name="tipo_registro"]:checked')?.value === "OTRAS"
+      && otherTypeSelect?.selectedOptions[0]?.dataset.loadMode === "CARGA_POR_DIA";
+    const isArticle = form.querySelector('input[name="tipo_registro"]:checked')?.value === "OTRAS"
+      && (otherTypeSelect?.value || "").trim().toUpperCase() === "HS ARTICULO";
+    const usesMode = isHours || isNocturnalJourney || isDailyOther;
+    const mode = dateMode?.querySelector('input[name="modo_fechas"]:checked')?.value || "FECHAS";
+    const usePeriod = usesMode && mode === "PERIODO";
+    dateMode?.classList.toggle("hidden", !usesMode);
+    dateMode?.querySelectorAll("input").forEach((input) => {
+      input.disabled = !usesMode;
+    });
+    datePeriod?.classList.toggle("hidden", !usePeriod);
+    datePeriod?.querySelectorAll("input").forEach((input) => {
       input.disabled = !usePeriod;
       input.required = usePeriod && input.type === "date";
     });
     if (specificDates) {
-      specificDates.classList.toggle("hidden", usePeriod);
+      specificDates.classList.toggle("hidden", usePeriod || isArticle);
       specificDates.querySelectorAll('input[name="fecha"]').forEach((input) => {
-        input.disabled = usePeriod;
-        input.required = !usePeriod;
+        input.disabled = usePeriod || isArticle;
+        input.required = !usePeriod && !isArticle;
       });
     }
+    const allowSpecificMultiple = usesMode && !usePeriod;
+    form.querySelector("[data-add-date]")?.classList.toggle("hidden", !allowSpecificMultiple);
+    form.querySelector("[data-multi-date-help]")?.classList.toggle("hidden", !allowSpecificMultiple);
     if (usePeriod) {
-      const from = nocturnalPeriod?.querySelector('input[name="nocturna_fecha_desde"]');
-      const to = nocturnalPeriod?.querySelector('input[name="nocturna_fecha_hasta"]');
+      const from = datePeriod?.querySelector('input[name="periodo_fecha_desde"]');
+      const to = datePeriod?.querySelector('input[name="periodo_fecha_hasta"]');
       if (from && !from.value) from.value = form.dataset.dateMin || "";
       if (to && !to.value) to.value = form.dataset.dateMax || "";
     }
+    updatePeriodPreview();
     updateNocturnalPreview();
+  }
+
+  function updatePeriodPreview() {
+    const preview = datePeriod?.querySelector("[data-period-preview]");
+    if (!preview || datePeriod?.classList.contains("hidden")) return;
+    const fromValue = datePeriod.querySelector('input[name="periodo_fecha_desde"]')?.value;
+    const toValue = datePeriod.querySelector('input[name="periodo_fecha_hasta"]')?.value;
+    const weekdays = new Set(Array.from(
+      datePeriod.querySelectorAll('input[name="periodo_dias_semana"]:checked'),
+    ).map((input) => Number(input.value)));
+    if (!fromValue || !toValue || !weekdays.size) {
+      preview.textContent = "Completá el período y elegí al menos un día de la semana.";
+      return;
+    }
+    const cursor = localDate(fromValue);
+    const finish = localDate(toValue);
+    if (!cursor || !finish || cursor > finish) {
+      preview.textContent = "Revisá las fechas del período.";
+      return;
+    }
+    const isNocturnalJourney = form.querySelector('input[name="tipo_registro"]:checked')?.value === "OTRAS"
+      && (otherTypeSelect?.value || "").trim().toUpperCase() === "NOCTURNAS EN JORNADA";
+    let valid = 0;
+    let omittedHolidays = 0;
+    while (cursor <= finish) {
+      const iso = isoLocalDate(cursor);
+      const pythonWeekday = (cursor.getDay() + 6) % 7;
+      if (weekdays.has(pythonWeekday)) {
+        if (isNocturnalJourney && holidays.has(iso)) omittedHolidays += 1;
+        else valid += 1;
+      }
+      cursor.setDate(cursor.getDate() + 1);
+    }
+    const isDailyOther = form.querySelector('input[name="tipo_registro"]:checked')?.value === "OTRAS"
+      && otherTypeSelect?.selectedOptions[0]?.dataset.loadMode === "CARGA_POR_DIA";
+    const sharedData = isDailyOther
+      ? "La misma cantidad configurada y observación se aplicarán a todas las fechas."
+      : "El mismo horario y observación se aplicarán a todas las fechas.";
+    preview.textContent = `Se generarán ${valid} registros${omittedHolidays ? ` y se omitirán ${omittedHolidays} feriados` : ""}. ${sharedData}`;
   }
 
   const overlapMinutes = (start, end, rangeStart, rangeEnd) => {
@@ -670,13 +709,13 @@ document.querySelectorAll(".request-form").forEach((form) => {
       timeToMinutes(nocturnalStart.value), timeToMinutes(nocturnalEnd.value),
       timeToMinutes(rangeFrom), timeToMinutes(rangeTo),
     ) / 60;
-    const mode = nocturnalMode?.querySelector('input[name="modo_nocturnas"]:checked')?.value || "FECHAS";
+    const mode = dateMode?.querySelector('input[name="modo_fechas"]:checked')?.value || "FECHAS";
     let periodSummary = "";
     if (mode === "PERIODO") {
-      const fromValue = nocturnalPeriod?.querySelector('input[name="nocturna_fecha_desde"]')?.value;
-      const toValue = nocturnalPeriod?.querySelector('input[name="nocturna_fecha_hasta"]')?.value;
+      const fromValue = datePeriod?.querySelector('input[name="periodo_fecha_desde"]')?.value;
+      const toValue = datePeriod?.querySelector('input[name="periodo_fecha_hasta"]')?.value;
       const weekdays = new Set(Array.from(
-        nocturnalPeriod?.querySelectorAll('input[name="nocturna_dias_semana"]:checked') || [],
+        datePeriod?.querySelectorAll('input[name="periodo_dias_semana"]:checked') || [],
       ).map((input) => Number(input.value)));
       if (fromValue && toValue && weekdays.size) {
         const cursor = localDate(fromValue);
@@ -700,13 +739,17 @@ document.querySelectorAll(".request-form").forEach((form) => {
       : `El horario no se superpone con la franja nocturna ${rangeFrom} a ${rangeTo}.`;
   }
 
-  const updateArticleResult = (calculator) => {
-    if (!calculator) return;
-    const endDate = calculator.querySelector("[data-article-end-date]")?.value;
-    const endTime = calculator.querySelector("[data-article-end-time]")?.value;
-    const nextDate = calculator.querySelector("[data-article-next-date]")?.value;
-    const nextTime = calculator.querySelector("[data-article-next-time]")?.value;
-    const result = calculator.querySelector("[data-article-result]");
+  const updateArticleResult = (row) => {
+    if (!row) return;
+    const endDate = row.querySelector("[data-article-end-date]")?.value;
+    const endTime = row.querySelector("[data-article-end-time]")?.value;
+    const nextDate = row.querySelector("[data-article-next-date]")?.value;
+    const nextTime = row.querySelector("[data-article-next-time]")?.value;
+    const result = row.querySelector("[data-article-result]");
+    const nextDateInput = row.querySelector("[data-article-next-date]");
+    nextDateInput?.setCustomValidity("");
+    row.dataset.articleValid = "false";
+    result?.classList.remove("article-result-error");
     if (!endDate || !endTime || !nextDate || !nextTime) {
       if (result) result.textContent = "Completá ambos momentos para calcular las HS ARTICULO.";
       return;
@@ -715,13 +758,132 @@ document.querySelectorAll(".request-form").forEach((form) => {
     const next = new Date(`${nextDate}T${nextTime}:00`);
     const rest = (next - end) / 3600000;
     if (rest <= 0) {
-      if (result) result.textContent = "El inicio siguiente debe ser posterior al fin de la jornada anterior.";
+      const message = "El inicio de la jornada siguiente debe ser posterior al fin de la anterior.";
+      nextDateInput?.setCustomValidity(message);
+      if (result) {
+        result.textContent = message;
+        result.classList.add("article-result-error");
+      }
     } else if (rest >= 12) {
+      row.dataset.articleValid = "true";
       if (result) result.textContent = `Descanso real: ${rest.toLocaleString("es-AR")} h. Se cumplieron las 12 horas; no corresponde HS ARTICULO.`;
     } else if (result) {
+      row.dataset.articleValid = "true";
       const articleHours = Math.round((12 - rest) * 2) / 2;
       result.textContent = `Descanso real: ${rest.toLocaleString("es-AR")} h. Corresponden ${articleHours.toLocaleString("es-AR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} HS ARTICULO.`;
     }
+  };
+
+  otherArticle?.querySelectorAll("[data-article-time-control]").forEach((control) => {
+    const hour = control.querySelector("[data-article-hour]");
+    const minute = control.querySelector("[data-article-minute]");
+    const hidden = control.querySelector('input[type="hidden"]');
+    const sync = () => {
+      hidden.value = hour.value && minute.value ? `${hour.value}:${minute.value}` : "";
+      updateArticleResult(otherArticle);
+    };
+    hour?.addEventListener("change", sync);
+    minute?.addEventListener("change", sync);
+  });
+  otherArticle?.querySelectorAll("[data-article-end-date], [data-article-next-date]").forEach((input) => {
+    input.addEventListener("change", () => updateArticleResult(otherArticle));
+  });
+
+  const articleDates = () => {
+    const mode = dateMode?.querySelector('input[name="modo_fechas"]:checked')?.value || "FECHAS";
+    if (mode === "PERIODO") {
+      const from = localDate(datePeriod?.querySelector('input[name="periodo_fecha_desde"]')?.value);
+      const to = localDate(datePeriod?.querySelector('input[name="periodo_fecha_hasta"]')?.value);
+      const weekdays = new Set(Array.from(
+        datePeriod?.querySelectorAll('input[name="periodo_dias_semana"]:checked') || [],
+      ).map((input) => Number(input.value)));
+      if (!from || !to || from > to || !weekdays.size) return [];
+      const dates = [];
+      while (from <= to) {
+        if (weekdays.has((from.getDay() + 6) % 7)) dates.push(isoLocalDate(from));
+        from.setDate(from.getDate() + 1);
+      }
+      return dates;
+    }
+    return Array.from(new Set(Array.from(
+      specificDates?.querySelectorAll('input[name="fecha"]') || [],
+    ).map((input) => input.value).filter(Boolean))).sort();
+  };
+
+  const formatArticleDate = (iso) => {
+    const [year, month, day] = iso.split("-");
+    return `${day}/${month}/${year}`;
+  };
+
+  const setArticleTimeValue = (input, value) => {
+    if (!input) return;
+    input.value = value || "";
+    const control = input.closest("[data-article-time-control]");
+    const [hour = "", minute = ""] = (value || "").split(":");
+    if (control?.querySelector("[data-article-hour]")) {
+      control.querySelector("[data-article-hour]").value = hour;
+      control.querySelector("[data-article-minute]").value = minute || "00";
+    }
+  };
+
+  const setArticleEndFromSource = (row) => {
+    const source = row.querySelector("[data-article-source]")?.value;
+    if (!source || !endInput.value) return;
+    const endDate = localDate(source);
+    if (startInput.value && timeToMinutes(endInput.value) < timeToMinutes(startInput.value)) {
+      endDate.setDate(endDate.getDate() + 1);
+    }
+    const endDateInput = row.querySelector("[data-article-end-date]");
+    const endTimeInput = row.querySelector("[data-article-end-time]");
+    if (endDateInput) endDateInput.value = isoLocalDate(endDate);
+    setArticleTimeValue(endTimeInput, endInput.value);
+    updateArticleResult(row);
+  };
+
+  const refreshArticleSources = () => {
+    const dates = articleDates();
+    hoursArticle?.querySelectorAll(".article-calculation-row").forEach((row) => {
+      const select = row.querySelector("[data-article-source]");
+      const previous = select.value;
+      select.innerHTML = '<option value="">Seleccionar jornada</option>'
+        + dates.map((value) => `<option value="${value}">${formatArticleDate(value)} · finaliza ${endInput.value || "--:--"}</option>`).join("");
+      if (dates.includes(previous)) select.value = previous;
+      else if (dates.length === 1) select.value = dates[0];
+      if (select.value) setArticleEndFromSource(row);
+    });
+  };
+
+  const addArticleRow = () => {
+    const rows = hoursArticle?.querySelector("[data-article-rows]");
+    const template = hoursArticle?.querySelector("[data-article-row-template]");
+    if (!rows || !template) return;
+    const row = template.content.firstElementChild.cloneNode(true);
+    rows.appendChild(row);
+    row.querySelectorAll("input, select").forEach((input) => {
+      input.disabled = false;
+    });
+    row.querySelectorAll("[data-article-time-control]").forEach((control) => {
+      const hour = control.querySelector("[data-article-hour]");
+      const minute = control.querySelector("[data-article-minute]");
+      const hidden = control.querySelector('input[type="hidden"]');
+      const sync = () => {
+        hidden.value = hour.value && minute.value ? `${hour.value}:${minute.value}` : "";
+        updateArticleResult(row);
+      };
+      hour.addEventListener("change", sync);
+      minute.addEventListener("change", sync);
+    });
+    row.querySelector("[data-article-source]")?.addEventListener("change", () => {
+      setArticleEndFromSource(row);
+    });
+    row.querySelectorAll("[data-article-end-date], [data-article-end-time], [data-article-next-date], [data-article-next-time]").forEach((input) => {
+      input.addEventListener("change", () => updateArticleResult(row));
+    });
+    row.querySelector("[data-article-remove]")?.addEventListener("click", () => {
+      row.remove();
+      if (!rows.children.length) setHoursArticleEnabled(false);
+    });
+    refreshArticleSources();
   };
 
   const setHoursArticleEnabled = (enabled) => {
@@ -729,35 +891,18 @@ document.querySelectorAll(".request-form").forEach((form) => {
     const flag = hoursArticle?.querySelector("[data-article-enabled]");
     panel?.classList.toggle("hidden", !enabled);
     if (flag) flag.value = enabled ? "SI" : "NO";
-    panel?.querySelectorAll("input").forEach((input) => {
+    panel?.querySelectorAll("input, select, button").forEach((input) => {
       input.disabled = !enabled;
-      input.required = enabled;
     });
-  };
-
-  const fillArticleEndFromHours = () => {
-    if (!hoursArticle || !primaryDate?.value || !endInput.value) return;
-    const endDateInput = hoursArticle.querySelector("[data-article-end-date]");
-    const endTimeInput = hoursArticle.querySelector("[data-article-end-time]");
-    const endDate = localDate(primaryDate.value);
-    if (startInput.value && timeToMinutes(endInput.value) < timeToMinutes(startInput.value)) {
-      endDate.setDate(endDate.getDate() + 1);
-    }
-    if (endDateInput) endDateInput.value = isoLocalDate(endDate);
-    if (endTimeInput) endTimeInput.value = endInput.value;
-    updateArticleResult(hoursArticle);
+    if (enabled && !hoursArticle?.querySelector(".article-calculation-row")) addArticleRow();
+    if (enabled) refreshArticleSources();
   };
 
   hoursArticle?.querySelector("[data-article-toggle]")?.addEventListener("click", () => {
     const enabled = hoursArticle.querySelector("[data-article-enabled]")?.value !== "SI";
     setHoursArticleEnabled(enabled);
-    if (enabled) fillArticleEndFromHours();
   });
-  [hoursArticle, otherArticle].forEach((calculator) => {
-    calculator?.querySelectorAll("input[type='date'], input[type='time']").forEach((input) => {
-      input.addEventListener("change", () => updateArticleResult(calculator));
-    });
-  });
+  hoursArticle?.querySelector("[data-article-add]")?.addEventListener("click", addArticleRow);
   const changeOtherQuantity = (delta) => {
     if (!otherQuantity) return;
     const nextValue = Math.max(0.5, (Number(otherQuantity.value) || 1) + delta);
@@ -779,15 +924,32 @@ document.querySelectorAll(".request-form").forEach((form) => {
   });
   nocturnalStart?.addEventListener("change", updateNocturnalPreview);
   nocturnalEnd?.addEventListener("change", updateNocturnalPreview);
-  nocturnalMode?.querySelectorAll('input[name="modo_nocturnas"]').forEach((input) => {
-    input.addEventListener("change", updateNocturnalMode);
+  dateMode?.querySelectorAll('input[name="modo_fechas"]').forEach((input) => {
+    input.addEventListener("change", updateRecordType);
   });
-  nocturnalPeriod?.querySelectorAll("input").forEach((input) => {
-    input.addEventListener("change", updateNocturnalPreview);
+  datePeriod?.querySelectorAll("input").forEach((input) => {
+    input.addEventListener("change", () => {
+      updatePeriodPreview();
+      updateNocturnalPreview();
+    });
   });
-  primaryDate?.addEventListener("change", fillArticleEndFromHours);
-  startInput.addEventListener("change", fillArticleEndFromHours);
-  endInput.addEventListener("change", fillArticleEndFromHours);
+  specificDates?.addEventListener("change", refreshArticleSources);
+  datePeriod?.addEventListener("change", refreshArticleSources);
+  startInput.addEventListener("change", refreshArticleSources);
+  endInput.addEventListener("change", refreshArticleSources);
+  form.addEventListener("submit", (event) => {
+    if (hoursArticle?.querySelector("[data-article-enabled]")?.value !== "SI") return;
+    const rows = Array.from(hoursArticle.querySelectorAll(".article-calculation-row"));
+    rows.forEach(updateArticleResult);
+    const invalid = rows.find((row) => row.dataset.articleValid !== "true");
+    if (!invalid) return;
+    event.preventDefault();
+    invalid.scrollIntoView({ behavior: "smooth", block: "center" });
+    const firstIncomplete = invalid.querySelector(
+      "select:invalid, input:not([type='hidden']):invalid",
+    );
+    if (firstIncomplete) firstIncomplete.reportValidity();
+  });
 
   const conceptSection = form.querySelector("[data-additional-concepts]");
   const conceptRows = conceptSection?.querySelector("[data-concept-rows]");
