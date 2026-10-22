@@ -26,6 +26,7 @@
 
   {% if pack_edicion %}<section class="card form-card">
     <div class="section-heading section-heading-pill"><div><span class="section-kicker">Edición</span><h2>Modificar pack de {{ pack_edicion.usuario.apellido }}, {{ pack_edicion.usuario.nombre }}</h2></div></div>
+    <p class="muted">Los cambios se aplican desde el período actual en adelante. Las precargas de períodos anteriores se conservan como historial.</p>
     <form method="post" action="/configuracion/precargas-autorizadas/{{ pack_edicion.id }}/editar" class="rule-form">
       <label class="field"><span>Concepto *</span><select name="tipo_hora" required>{% for concepto in conceptos_edicion %}<option value="{{ concepto }}" {% if concepto == pack_edicion.tipo_hora|upper %}selected{% endif %}>{{ concepto }}</option>{% endfor %}</select></label>
       <label class="field"><span>Cantidad por período *</span><input type="number" name="cantidad" min="0.01" step="0.01" required value="{{ pack_edicion.cantidad }}"></label>
@@ -47,7 +48,7 @@
         <td data-label="Cantidad"><strong>{{ '%.2f'|format(pack.cantidad) }}</strong><span class="cell-help">por período</span></td>
         <td data-label="Estado"><span class="status-chip success-chip">Autorizado</span></td>
         <td data-label="Motivo" class="observations">{{ (pack.observaciones or '—')|replace('Precarga autorizada por período. ', '') }}</td>
-        <td data-label="Acciones" class="actions-column"><a class="ui-btn icon-btn edit-btn" href="/configuracion/precargas-autorizadas?editar={{ pack.id }}" aria-label="Editar pack" title="Editar pack"><i class="bi bi-pencil"></i></a><form method="post" action="/configuracion/precargas-autorizadas/{{ pack.id }}/eliminar" class="inline-form" onsubmit="return confirm('¿Eliminar este pack y todas sus precargas?');"><button class="ui-btn icon-btn danger-btn" type="submit" aria-label="Eliminar pack" title="Eliminar pack"><i class="bi bi-trash"></i></button></form></td>
+        <td data-label="Acciones" class="actions-column">{% if pack.tiene_periodos_modificables %}<a class="ui-btn icon-btn edit-btn" href="/configuracion/precargas-autorizadas?editar={{ pack.id }}" aria-label="Editar pack desde el período actual" title="Editar desde el período actual"><i class="bi bi-pencil"></i></a><form method="post" action="/configuracion/precargas-autorizadas/{{ pack.id }}/eliminar" class="inline-form" onsubmit="return confirm('¿Eliminar las precargas del período actual y los futuros? Las anteriores se conservarán.');"><button class="ui-btn icon-btn danger-btn" type="submit" aria-label="Eliminar pack desde el período actual" title="Eliminar desde el período actual"><i class="bi bi-trash"></i></button></form>{% else %}<span class="muted">Histórico</span>{% endif %}</td>
       </tr>{% endfor %}</tbody>
     </table></div>{% else %}<div class="empty-state"><i class="bi bi-calendar2-check"></i><strong>Todavía no hay precargas</strong><span>Generá el primer pack para una persona.</span></div>{% endif %}
   </section>
