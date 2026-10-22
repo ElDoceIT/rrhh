@@ -18,9 +18,9 @@
       <a class="home-button{% if active_page == 'inicio' %} active{% endif %}" href="/" aria-label="Inicio" title="Inicio"><i class="bi bi-house-door-fill"></i></a>
       <span class="nav-separator" aria-hidden="true"></span>
       {% if current_user and (current_user.role|upper == 'ADMIN' or current_user.profile|upper == 'JEFE') %}<a class="app-menu-link{% if active_page == 'autorizaciones' %} active{% endif %}" href="/autorizaciones">Autorizaciones</a>{% if current_user.profile|upper == 'JEFE' and current_user.role|upper != 'RRHH' %}<a class="app-menu-link{% if active_page == 'rrhh_horas' %} active{% endif %}" href="/rrhh/horas-extras">Seguimiento</a>{% endif %}<span class="nav-separator" aria-hidden="true"></span>{% endif %}
-      {% if current_user and current_user.role|upper == 'RRHH' %}<a class="app-menu-link{% if active_page == 'rrhh_carga' %} active{% endif %}" href="/solicitudes/nueva?destino=rrhh">Carga administrativa</a><a class="app-menu-link{% if active_page == 'rrhh_horas' %} active{% endif %}" href="/rrhh/horas-extras">Seguimiento</a><a class="app-menu-link{% if active_page == 'rrhh_exportacion' %} active{% endif %}" href="/rrhh/exportacion">Exportación</a><span class="nav-separator" aria-hidden="true"></span>{% endif %}
-      {% if current_user and (current_user.role|upper in ['ADMIN', 'RRHH'] or current_user.profile|upper == 'JEFE') %}<div class="menu-dropdown">
-        <button class="app-menu-link dropdown-trigger{% if active_page in ['parametros', 'usuarios', 'feriados', 'conceptos_excepcionales'] %} active{% endif %}" type="button">
+      {% if current_user and current_user.role|upper in ['ADMIN', 'RRHH'] %}<a class="app-menu-link{% if active_page == 'rrhh_carga' %} active{% endif %}" href="/solicitudes/nueva?destino=rrhh">Carga administrativa</a><a class="app-menu-link{% if active_page == 'rrhh_horas' %} active{% endif %}" href="/rrhh/horas-extras">Seguimiento</a><a class="app-menu-link{% if active_page == 'rrhh_exportacion' %} active{% endif %}" href="/rrhh/exportacion">Exportación</a><span class="nav-separator" aria-hidden="true"></span>{% endif %}
+      {% if current_user and current_user.role|upper in ['ADMIN', 'RRHH'] %}<div class="menu-dropdown">
+        <button class="app-menu-link dropdown-trigger{% if active_page in ['parametros', 'usuarios', 'feriados', 'conceptos_excepcionales', 'precargas_autorizadas'] %} active{% endif %}" type="button">
           Configuración <i class="bi bi-chevron-down"></i>
         </button>
         <div class="dropdown-panel">
@@ -28,6 +28,7 @@
           {% if current_user.role|upper in ['ADMIN', 'RRHH'] %}<a href="/configuracion/usuarios"><i class="bi bi-people"></i> Usuarios y roles</a>
           <a href="/configuracion/feriados"><i class="bi bi-calendar-event"></i> Feriados</a>{% endif %}
           <a href="/configuracion/conceptos-excepcionales"><i class="bi bi-person-check"></i> Conceptos excepcionales</a>
+          {% if current_user.role|upper in ['ADMIN', 'RRHH'] %}<a href="/configuracion/precargas-autorizadas"><i class="bi bi-calendar2-check"></i> Precargas autorizadas</a>{% endif %}
         </div>
       </div>{% endif %}
     </div>

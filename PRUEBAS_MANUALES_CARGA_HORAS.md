@@ -1,247 +1,304 @@
-# Pruebas manuales de carga de horas
+# Suite de pruebas manuales
 
-Plan concreto de validación funcional para RRHH. Contiene **20 casos**, distribuidos entre los convenios CISPREN, SAL, SAT y FC.
+Plan funcional ordenado para validar cargas, autorizaciones, conceptos automáticos y liquidación. Cada comportamiento común se prueba una sola vez. Un convenio vuelve a aparecer solamente cuando cambia la regla o el resultado esperado.
 
 ## Preparación
 
-Antes de comenzar:
+- Disponer de usuarios activos CISPREN, SAL, SAT, FC y MONOTRIBUTISTA.
+- Contar al menos con una persona de Nómina y otra de Monotributo o Consultora.
+- Asignar a FC la habilitación excepcional requerida.
+- Asignar `switcher_nocturnidad` solamente a una persona incluida en la prueba.
+- Configurar un feriado que devuelve y otro que no devuelve dentro del período vigente.
+- Usar fechas sin cargas anteriores, excepto cuando el caso indique lo contrario.
+- Toda carga manual debe incluir una observación.
 
-- Crear o elegir un usuario activo de cada convenio: CISPREN, SAL, SAT y FC.
-- Usar usuarios con perfil **USUARIO** y tipo de contratación que permita cargar las fechas elegidas.
-  - Nómina: usar una fecha dentro del período vigente del 16 al 15.
-  - Monotributo y Consultora: usar una fecha del mes calendario vigente.
-- Confirmar que todos tengan las reglas indicadas en el documento de reglas vigente.
-- Crear dentro del período permitido:
-  - un feriado marcado **Devuelve = Sí**;
-  - otro feriado marcado **Devuelve = No**;
-  - un domingo para las pruebas SAT.
-- Escribir una observación en todos los casos. Si se omite, el sistema debe impedir continuar.
-- Para comprobar conceptos excepcionales, crear uno de prueba, por ejemplo **PLUS MÓVIL**, y asignarlo sólo a uno de los usuarios durante una vigencia que incluya la fecha de prueba.
-- Usar fechas sin cargas previas, salvo cuando el caso indique lo contrario.
+Períodos vigentes:
 
-> En los ejemplos, “franco” significa una fecha que no figura como feriado y que se informa desde la opción **Franco o feriado trabajado**. El sistema no deduce automáticamente que un sábado sea franco.
+- Nómina: del 16 de un mes al 15 del siguiente.
+- Monotributo y Consultora: mes calendario.
 
-## CISPREN
+## A. Validaciones generales
 
-### 1. Horas extras hábiles comunes
+### 1. Datos obligatorios y pasos horarios
 
-- [ ] Elegir **Horas extras**, un día hábil, de 18:00 a 19:30.
-- [ ] Agregar una observación, procesar y confirmar.
+- [ ] Con un usuario SAL, intentar procesar horas extras sin observación.
+- [ ] Intentar enviar un horario incompleto.
+- [ ] Intentar enviar minutos distintos de `00` o `30` manipulando el formulario.
 
-**Resultado esperado:** se genera una carga pendiente de **1,5 horas al 100%**. No genera reintegro, comida ni merienda.
+**Resultado esperado:** los tres intentos son rechazados y no generan borrador ni filas en la base.
 
-### 2. Jornada hábil nocturna que cruza medianoche
+### 2. Límite de fecha por contratación
 
-- [ ] Cargar un día hábil de 23:00 a 02:00 del día siguiente.
-- [ ] Procesar y confirmar.
+- [ ] Con una persona de Nómina, intentar cargar fuera del período 16–15 vigente.
+- [ ] Con una persona Monotributo o Consultora, intentar cargar fuera del mes vigente.
 
-**Resultado esperado:** la jornada se divide en las fechas correspondientes, totaliza **3 horas extra al 100%** y calcula **3 horas nocturnas**. No genera comida ni merienda.
+**Resultado esperado:** cada intento es rechazado con el rango permitido correspondiente.
 
-### 3. Franco menor a cuatro horas
+### 3. Cantidad manual en pasos de 0,5
 
-- [ ] Elegir **Franco o feriado trabajado** en una fecha no feriada.
-- [ ] Informar 10:00 a 13:30, sin horas extras adicionales.
+- [ ] Con un usuario SAT, cargar `METROS TORRE = 8,5`.
+- [ ] Intentar `METROS TORRE = 8,2`.
 
-**Resultado esperado:** se generan **3,5 horas al 100%**. No se genera el concepto de día franco trabajado y no se ofrece ni guarda reintegro.
+**Resultado esperado:** 8,5 se guarda como registro independiente; 8,2 es rechazado por el servidor.
 
-### 4. Feriado con medio reintegro y horas extra aparte
+### 4. Estado, edición y eliminación
 
-- [ ] Usar el feriado con **Devuelve = Sí**.
-- [ ] Informar 09:00 a 17:00.
-- [ ] Seleccionar **Medio reintegro** y agregar **1,5 horas extras**.
+- [ ] Crear una carga pendiente y editarla desde el usuario.
+- [ ] Autorizarla desde Jefatura.
+- [ ] Intentar editarla y eliminarla nuevamente desde el usuario.
 
-**Resultado esperado:** la vista previa muestra **1 feriado trabajado**, **0,5 reintegro** y **1,5 horas al 100%** en registros separados. No genera comida ni merienda.
+**Resultado esperado:** la pendiente puede modificarse; la autorizada ya no puede editarse ni eliminarse.
 
-### 5. EXTERIOR PRENSA: cantidades válidas e inválida
+### 5. Acceso administrativo
 
-- [ ] En **Otras cargas**, seleccionar EXTERIOR PRENSA y verificar que permita guardar cantidad **3**.
-- [ ] Repetir en otra fecha o carga con cantidad **6**.
-- [ ] Intentar enviar cantidad **4**, incluso manipulando el campo desde el navegador si la interfaz no la ofrece.
+- [ ] Ingresar con RRHH y luego con ADMIN.
+- [ ] Abrir Carga administrativa, Autorizaciones, Seguimiento, Exportación y Precargas autorizadas.
 
-**Resultado esperado:** 3 y 6 se guardan como registros separados de EXTERIOR PRENSA. La cantidad 4 es rechazada por el servidor.
+**Resultado esperado:** ambos roles acceden a las funciones administrativas. ADMIN puede ver cargas de todas las personas y roles.
 
-## SAL
+## B. Horas extras y nocturnidad
 
-### 6. Horas extras hábiles comunes
+### 6. Horas hábiles al 50% — referencia SAL
 
 - [ ] Cargar un día hábil de 18:00 a 20:30.
 
-**Resultado esperado:** se genera una carga pendiente de **2,5 horas al 50%**, sin comida, merienda ni reintegro.
+**Resultado esperado:** se generan 2,5 horas al 50%, sin reintegro ni conceptos automáticos.
 
-### 7. Franco de exactamente cuatro horas
+> No repetir en SAT: la clasificación al 50% es la misma. SAT se prueba aparte por comida, merienda y domingo.
 
-- [ ] Elegir **Franco o feriado trabajado** en una fecha no feriada.
-- [ ] Informar 08:00 a 12:00, sin horas extras adicionales y sin solicitar reintegro.
+### 7. Horas hábiles CISPREN
 
-**Resultado esperado:** por alcanzar la cuarta hora se genera **1 franco trabajado**, no 4 horas al 100%. No genera comida ni merienda.
+- [ ] Cargar un día hábil de 18:00 a 19:30.
 
-### 8. Franco largo con reintegro y extras
+**Resultado esperado:** se generan 1,5 horas al 100%. Esta prueba existe porque CISPREN difiere del 50% general.
 
-- [ ] Informar un franco de 10:00 a 18:00.
-- [ ] Solicitar reintegro y declarar **2 horas extras**.
+### 8. Jornada nocturna que cruza medianoche
 
-**Resultado esperado:** se generan por separado **1 franco trabajado**, **1 reintegro completo** y **2 horas al 100%**. Las horas extra corresponden al tramo final de la jornada. No se generan comida ni merienda porque SAL no tiene esos conceptos configurados.
+- [ ] Con un usuario SAL, cargar de 23:00 a 02:00.
 
-### 9. Feriado que no devuelve
+**Resultado esperado:** se crean tramos con sus fechas reales, suman 3 horas extras y calculan 3 horas nocturnas sin duplicarlas.
 
-- [ ] Usar el feriado marcado **Devuelve = No** e informar una jornada de al menos 4 horas.
-- [ ] Verificar la opción de reintegro antes de confirmar.
+### 9. Nocturnidad dentro de jornada habitual
 
-**Resultado esperado:** la opción de solicitar reintegro está deshabilitada o no aparece. Se guarda **1 feriado trabajado**, pero ningún reintegro.
+- [ ] Cargar `NOCTURNAS EN JORNADA` para una jornada habitual de 18:00 a 22:00.
 
-### 10. Concepto excepcional asignado y no asignado
+**Resultado esperado:** se guarda 1 hora nocturna en `cantidad`, sin generar horas extras. En las vistas debe identificarse claramente como nocturnidad habitual.
 
-- [ ] Con el usuario SAL que tiene asignado **PLUS MÓVIL**, cargar 2,5 unidades y justificarlo.
-- [ ] Ingresar luego con otro usuario SAL sin asignación y revisar sus opciones.
+### 10. Superposición de jornada habitual y horas extras
 
-**Resultado esperado:** el primer usuario ve el nombre y la descripción, y guarda **2,5 PLUS MÓVIL** como registro independiente. El segundo usuario no puede verlo ni cargarlo. En seguimiento, autorización y exportación debe figurar **PLUS MÓVIL**, no “Excepcional”.
+- [ ] Cargar horas extras de 22:00 a 01:00.
+- [ ] Intentar cargar para la misma fecha una jornada habitual de 21:00 a 23:00.
+- [ ] Repetir con jornada habitual de 18:00 a 22:00.
 
-## SAT
+**Resultado esperado:** 21:00–23:00 es rechazado por superposición; 18:00–22:00 es aceptado porque los intervalos son contiguos.
 
-### 11. Horas hábiles con nocturnidad y cálculos automáticos
+### 11. Subtotal único de horas nocturnas
 
-- [ ] Cargar un día hábil de 18:00 a 22:00.
+- [ ] Autorizar una carga extra con nocturnidad y otra de `NOCTURNAS EN JORNADA` en el mismo período.
+- [ ] Exportar desde RRHH.
 
-**Resultado esperado:** se generan **4 horas al 50%**, **1 hora nocturna**, **2 meriendas** y **1 comida**. Todos los conceptos aparecen como registros separados.
+**Resultado esperado:** ambas cantidades se suman bajo `HORAS NOCTURNAS`; no aparecen subtotales duplicados.
 
-### 12. Actualización de comida y merienda al editar
+### 12. Switcher de nocturnidad asignado
 
-- [ ] Tomar la carga pendiente del caso 11 y cambiarla de 4 a 6 horas extras en total.
-- [ ] Revisar todos los registros de esa jornada.
+- [ ] Usar una persona con asignación vigente de `switcher_nocturnidad`.
+- [ ] Generar 2 horas nocturnas desde horas extras y 1 hora desde jornada habitual.
 
-**Resultado esperado:** la carga queda en **6 horas extra**, y los automáticos se actualizan a **3 meriendas** y **2 comidas** sin duplicar los registros anteriores. La edición sólo es posible mientras todo siga pendiente.
+**Resultado esperado:** se genera un único registro automático de 3 `switcher_nocturnidad`. Al editar o eliminar las fuentes, la cantidad se recalcula sin duplicarse.
 
-### 13. Jornada que pasa de sábado a domingo
+### 13. Switcher no asignado o fuera de vigencia
 
-- [ ] Desde **Franco o feriado trabajado**, informar sábado 23:30 a domingo 07:00.
-- [ ] No declarar horas extras adicionales.
+- [ ] Repetir una carga nocturna con una persona sin asignación vigente.
 
-**Resultado esperado:** los tramos conservan sus fechas reales, se calcula la nocturnidad de 23:30 a 06:00 y se genera **1 DOMINGO** para el domingo. No se genera además un franco para ese domingo y no se permite reintegro por DOMINGO.
+**Resultado esperado:** se conservan las horas nocturnas, pero no se genera `switcher_nocturnidad`.
 
-### 14. Domingo duplicado
+## C. Franco, feriado y reintegro
 
-- [ ] Confirmar una carga DOMINGO para el usuario y fecha del caso 13.
-- [ ] Intentar generar otro DOMINGO para la misma persona y fecha mientras el primero está pendiente.
+### 14. Umbral común de cuatro horas — referencia SAL
 
-**Resultado esperado:** el segundo registro DOMINGO es rechazado. La misma validación debe mantenerse si el primero ya fue autorizado.
+- [ ] Informar un franco de 08:00 a 11:30.
+- [ ] En otra fecha, informar un franco de 08:00 a 12:00.
 
-### 15. Otras cargas SAT y pasos de cantidad
+**Resultado esperado:** 3,5 horas generan horas reales al 100%; exactamente 4 horas generan 1 franco trabajado.
 
-- [ ] Agregar en una carga de horas extras **FRACCIONAMIENTO = 1** con su justificación.
-- [ ] Agregar también **METROS TORRE = 8,5** con una justificación distinta.
-- [ ] Intentar una cantidad con décimas distinta de 0,5, por ejemplo 8,2.
+> No repetir en CISPREN ni SAT: usan el mismo umbral. Sus diferencias se cubren en reintegro y conceptos propios.
 
-**Resultado esperado:** FRACCIONAMIENTO y METROS TORRE se guardan como registros independientes, con sus nombres, cantidades, fecha y observación. La cantidad 8,2 no debe admitirse; sólo se aceptan pasos de 0,5.
+### 15. Reintegro CISPREN
 
-## FC
+- [ ] En un feriado que devuelve, informar al menos 4 horas.
+- [ ] Probar medio reintegro y reintegro completo en fechas distintas.
+- [ ] Agregar horas extras asociadas en uno de los casos.
 
-### 16. FC no permite cargar horas extras
+**Resultado esperado:** el día trabajado, el reintegro de 0,5 o 1 y las horas al 100% quedan en registros separados.
 
-- [ ] Ingresar con un usuario FC y revisar **¿Qué querés registrar?**.
-- [ ] Intentar enviar manualmente una carga de horas extras, aunque la opción no aparezca en pantalla.
+### 16. Feriado que no devuelve — referencia SAL
 
-**Resultado esperado:** FC solamente muestra **Franco o feriado trabajado**. La carga de horas extras también debe ser rechazada por el servidor y no debe quedar en el borrador.
+- [ ] En el feriado `Devuelve = No`, informar una jornada de al menos 4 horas.
 
-### 17. Franco menor a cuatro horas
+**Resultado esperado:** se guarda 1 feriado trabajado, pero no se ofrece ni guarda reintegro.
 
-- [ ] Informar un franco de 08:00 a 11:00.
+## D. Comportamientos específicos por convenio
 
-**Resultado esperado:** se genera **1 franco trabajado**, aunque la jornada dure menos de cuatro horas. No se generan horas al 100%, reintegro, comida ni merienda.
+### 17. Automáticos SAT: comida y merienda
 
-### 18. Feriado FC sin mínimo y sin reintegro
+- [ ] Cargar 4 horas extras SAT.
+- [ ] Editar la carga pendiente hasta totalizar 6 horas.
 
-- [ ] En un feriado con **Devuelve = Sí**, informar 08:00 a 10:00.
-- [ ] Revisar las opciones disponibles.
+**Resultado esperado:** con 4 horas se generan 2 meriendas y 1 comida; con 6 horas se actualizan a 3 meriendas y 2 comidas, sin duplicados.
 
-**Resultado esperado:** se genera **1 feriado trabajado**. Aunque sólo dure dos horas y el feriado devuelva, FC no muestra ni permite solicitar reintegro.
+### 18. Domingo SAT y cruce desde sábado
 
-### 19. Jornada FC nocturna informativa
+- [ ] Informar una jornada de sábado 23:30 a domingo 07:00.
 
-- [ ] Informar un franco trabajado de 22:00 a 01:00.
+**Resultado esperado:** se conservan las fechas, se calcula nocturnidad y se genera 1 DOMINGO para el domingo, sin franco adicional ni reintegro.
 
-**Resultado esperado:** se registra **1 franco trabajado**, conservando el horario completo como respaldo. No se generan horas extras ni un concepto de nocturnidad.
+### 19. Domingo SAT duplicado
 
-### 20. Autorización, bloqueo de edición y exportación
+- [ ] Con un DOMINGO pendiente, intentar otro para la misma persona y fecha.
+- [ ] Autorizar el primero y volver a intentar.
 
-- [ ] Autorizar como jefe una carga FC pendiente.
-- [ ] Intentar editarla o eliminarla desde el usuario que la creó.
-- [ ] Consultarla en Seguimiento y exportar el período a XLSX.
+**Resultado esperado:** ambos intentos de duplicación son rechazados.
 
-**Resultado esperado:** el usuario ya no puede editar ni eliminar la carga autorizada. Seguimiento la muestra agrupada bajo la persona con estado **Autorizada**. El Excel resume legajo, nombre y apellido, concepto y cantidad; la segunda hoja contiene legajo, nombre, concepto, cantidad, fecha y observación.
+### 20. HS ARTICULO SAT
 
-## HS ARTICULO — calculador de descanso entre jornadas
+- [ ] Cargar horas extras hasta las 23:00.
+- [ ] Informar que la jornada siguiente comienza a las 08:00.
 
-### 21. Cálculo desde una carga de horas extras
+**Resultado esperado:** calcula 9 horas de descanso y agrega 3 HS ARTICULO con observación automática. La cantidad no puede editarse manualmente.
 
-- [ ] Como usuario SAT, cargar horas extras el viernes de 18:00 a 23:00.
-- [ ] Abrir **¿Querés calcular HS ARTICULO (descanso entre jornadas)?**.
-- [ ] Verificar que el fin de jornada se complete con viernes a las 23:00.
-- [ ] Informar como inicio de la jornada siguiente el sábado a las 08:00.
+### 21. EXTERIOR PRENSA CISPREN
 
-**Resultado esperado:** el sistema calcula un descanso real de **9 horas** sobre las **12 horas** requeridas y agrega a la vista previa un registro separado de **3 HS ARTICULO**, fechado el sábado. La cantidad no puede modificarse manualmente.
+- [ ] Cargar cantidades 3 y 6 en fechas distintas.
+- [ ] Intentar cantidad 4 manipulando el formulario.
+- [ ] Intentar cargar dos veces EXTERIOR PRENSA para la misma persona y fecha.
 
-**Observación automática esperada:** `Fin de jornada anterior: [viernes] 23:00. Inicio de jornada siguiente: [sábado] 08:00. Descanso real: 9 horas. Descanso requerido: 12 horas. HS ARTICULO: 3 horas.`
+**Resultado esperado:** 3 y 6 son aceptadas en fechas distintas; 4 es rechazada. Sólo se admite una carga de EXTERIOR PRENSA por persona y fecha, aunque la anterior esté pendiente o autorizada.
 
-## Nuevas reglas — FC y MONOTRIBUTISTA
+### 22. FC
 
-### 22. FC: jornada extensa sin horas extras ni reintegro
+- [ ] Sin habilitación vigente, intentar ingresar a la carga.
+- [ ] Con habilitación, cargar horas hábiles al 50%.
+- [ ] Informar un franco de 2 horas y otro con horas extra asociadas.
 
-- [ ] Como usuario FC, informar un franco de 08:00 a 18:00.
-- [ ] Revisar si se ofrecen horas extras asociadas o reintegro.
+**Resultado esperado:** sin permiso no puede cargar. Con permiso admite horas hábiles al 50%; el franco siempre genera 1 día y las extras asociadas quedan al 100%. No genera reintegro, nocturnidad, comida ni merienda.
 
-**Resultado esperado:** se genera únicamente **1 franco trabajado**. La duración queda registrada como respaldo, pero no se generan horas extras y no aparecen opciones de reintegro.
+### 23. MONOTRIBUTISTA
 
-### 23. MONOTRIBUTISTA: horas extras en día hábil
+- [ ] Cargar horas hábiles.
+- [ ] Informar un franco corto con 1 hora extra asociada.
+- [ ] Informar un feriado sin horas extra.
 
-- [ ] Como usuario con convenio MONOTRIBUTISTA, cargar **2 horas al 50%** en un día hábil.
-- [ ] Repetir con una carga válida de horas al 100%, según las reglas configuradas.
+**Resultado esperado:** las hábiles quedan al 50%; el franco corto genera 1 día y 1 hora al 100%; el feriado genera 1 día. No permite reintegro ni genera comida o merienda.
 
-**Resultado esperado:** ambas cargas se permiten como registros independientes con su tipo y cantidad. No se generan comida, merienda ni reintegro.
+### 24. Concepto excepcional personal
 
-### 24. MONOTRIBUTISTA: franco corto con horas extras asociadas
+- [ ] Asignar temporalmente un concepto manual a una persona.
+- [ ] Verificar con otra persona del mismo convenio sin asignación.
 
-- [ ] Informar un franco trabajado de 18:00 a 20:00.
-- [ ] Seleccionar que también realizó horas extras e ingresar **1 hora**.
+**Resultado esperado:** sólo la persona asignada puede verlo y cargarlo durante la vigencia. Las vistas y la exportación muestran su nombre real.
 
-**Resultado esperado:** aunque la jornada sea menor a cuatro horas, se generan por separado **1 franco trabajado** y **1 hora extra** del tipo correspondiente a FRANCO. No se convierte toda la jornada en horas extras y no se permite solicitar reintegro.
+## E. Precargas autorizadas
 
-### 25. MONOTRIBUTISTA: feriado largo sin horas extras
+### 25. Conceptos disponibles según convenio
 
-- [ ] En un feriado marcado **Devuelve = Sí**, informar una jornada de 09:00 a 17:00.
-- [ ] No agregar horas extras.
+- [ ] Entrar como RRHH o ADMIN y elegir una persona.
+- [ ] Revisar el selector de conceptos.
+- [ ] Comparar un convenio con franja nocturna y otro sin franja nocturna.
 
-**Resultado esperado:** se genera únicamente **1 feriado trabajado**. No aparece ni se genera reintegro, independientemente de la duración y de que el feriado esté marcado como que devuelve.
+**Resultado esperado:** sólo aparecen conceptos generales configurados para su convenio. Si el convenio tiene franja nocturna, también aparece HORAS NOCTURNAS; si no la tiene, no aparece. No existe una opción para crear conceptos desde esta pantalla.
 
-## Control general de resultados
+### 26. Períodos disponibles y límite
 
-Completar al ejecutar cada caso:
+- [ ] Elegir una persona de Nómina y otra de Monotributo o Consultora.
+- [ ] Revisar los períodos inicial y final.
+- [ ] Intentar enviar manualmente un período histórico o más de 12 períodos.
 
-| Caso | Fecha probada | Resultado real | Estado | Observaciones / evidencia |
-|---:|---|---|---|---|
-| 1 |  |  | Pendiente |  |
-| 2 |  |  | Pendiente |  |
-| 3 |  |  | Pendiente |  |
-| 4 |  |  | Pendiente |  |
-| 5 |  |  | Pendiente |  |
-| 6 |  |  | Pendiente |  |
-| 7 |  |  | Pendiente |  |
-| 8 |  |  | Pendiente |  |
-| 9 |  |  | Pendiente |  |
-| 10 |  |  | Pendiente |  |
-| 11 |  |  | Pendiente |  |
-| 12 |  |  | Pendiente |  |
-| 13 |  |  | Pendiente |  |
-| 14 |  |  | Pendiente |  |
-| 15 |  |  | Pendiente |  |
-| 16 |  |  | Pendiente |  |
-| 17 |  |  | Pendiente |  |
-| 18 |  |  | Pendiente |  |
-| 19 |  |  | Pendiente |  |
-| 20 |  |  | Pendiente |  |
-| 21 |  |  | Pendiente |  |
-| 22 |  |  | Pendiente |  |
-| 23 |  |  | Pendiente |  |
-| 24 |  |  | Pendiente |  |
-| 25 |  |  | Pendiente |  |
+**Resultado esperado:** Nómina ofrece 16–15; Monotributo/Consultora, meses calendario. Se muestra primero el período actual, no hay históricos y el máximo es 12. El servidor rechaza valores inválidos.
+
+### 27. Generación y visualización del pack
+
+- [ ] Crear un pack de 3 períodos para un concepto al 50% o 100%.
+- [ ] Consultar Precargas autorizadas, el historial del usuario y Seguimiento.
+
+**Resultado esperado:** se crean 3 filas aprobadas en `horas_extras`, una por inicio de período, con `tipo_registro = PRECARGA_AUTORIZADA`, cantidad informada y horarios nulos. La pantalla administrativa las agrupa como un pack.
+
+### 28. Exclusión de cálculos automáticos
+
+- [ ] Crear un pack cuyo inicio coincida con domingo, franco o feriado.
+
+**Resultado esperado:** la fecha es sólo representativa. No genera día trabajado, DOMINGO, reintegro, nocturnidad, comida, merienda ni `switcher_nocturnidad`.
+
+### 29. Exportación de precarga
+
+- [ ] Crear una precarga de 4 horas al 100% y una carga real de 2 horas al 100% en el mismo período.
+- [ ] Exportar desde RRHH.
+
+**Resultado esperado:** el subtotal de `Horas extras al 100%` es 6. La precarga no aparece como un concepto diferente.
+
+### 30. Editar y eliminar packs
+
+- [ ] Editar cantidad, concepto, período final y motivo de un pack.
+- [ ] Comprobar sus filas en Seguimiento.
+- [ ] Eliminar el pack.
+
+**Resultado esperado:** la edición reemplaza sin duplicar solamente las filas del período actual y los futuros; las precargas de períodos anteriores conservan sus datos originales. La eliminación también quita únicamente el período actual y los futuros. Un grupo completamente histórico se muestra sólo para consulta, sin acciones de edición o eliminación.
+
+## F. Autorización, seguimiento y exportación
+
+### 31. Autorización agrupada
+
+- [ ] Autorizar una jornada con carga principal y conceptos automáticos.
+
+**Resultado esperado:** todos los registros vinculados cambian juntos a Autorizada. Los automáticos no se administran como cargas aisladas.
+
+### 32. Seguimiento por persona
+
+- [ ] Filtrar por período, usuario, convenio y contratación.
+
+**Resultado esperado:** las cargas cumplen todos los filtros y el subtotal coincide con el detalle. Las precargas se identifican como `Precarga autorizada`.
+
+### 33. Exportación consolidada
+
+- [ ] Exportar un período con horas, nocturnidad, días, reintegros, otras cargas, excepcionales y precargas.
+
+**Resultado esperado:** sólo se exportan autorizadas. La hoja resumen consolida por persona y concepto; el detalle conserva fecha y observación.
+
+## Registro de ejecución
+
+| Caso | Fecha | Usuario/convenio | Resultado real | Estado | Evidencia u observaciones |
+|---:|---|---|---|---|---|
+| 1 |  |  |  | Pendiente |  |
+| 2 |  |  |  | Pendiente |  |
+| 3 |  |  |  | Pendiente |  |
+| 4 |  |  |  | Pendiente |  |
+| 5 |  |  |  | Pendiente |  |
+| 6 |  |  |  | Pendiente |  |
+| 7 |  |  |  | Pendiente |  |
+| 8 |  |  |  | Pendiente |  |
+| 9 |  |  |  | Pendiente |  |
+| 10 |  |  |  | Pendiente |  |
+| 11 |  |  |  | Pendiente |  |
+| 12 |  |  |  | Pendiente |  |
+| 13 |  |  |  | Pendiente |  |
+| 14 |  |  |  | Pendiente |  |
+| 15 |  |  |  | Pendiente |  |
+| 16 |  |  |  | Pendiente |  |
+| 17 |  |  |  | Pendiente |  |
+| 18 |  |  |  | Pendiente |  |
+| 19 |  |  |  | Pendiente |  |
+| 20 |  |  |  | Pendiente |  |
+| 21 |  |  |  | Pendiente |  |
+| 22 |  |  |  | Pendiente |  |
+| 23 |  |  |  | Pendiente |  |
+| 24 |  |  |  | Pendiente |  |
+| 25 |  |  |  | Pendiente |  |
+| 26 |  |  |  | Pendiente |  |
+| 27 |  |  |  | Pendiente |  |
+| 28 |  |  |  | Pendiente |  |
+| 29 |  |  |  | Pendiente |  |
+| 30 |  |  |  | Pendiente |  |
+| 31 |  |  |  | Pendiente |  |
+| 32 |  |  |  | Pendiente |  |
+| 33 |  |  |  | Pendiente |  |
 
 Estados sugeridos: **OK**, **Falló** o **No se pudo probar**.

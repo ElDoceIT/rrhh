@@ -91,11 +91,12 @@ async def require_login(request: Request, call_next):
         users_path = path.startswith("/configuracion/usuarios")
         holidays_path = path.startswith("/configuracion/feriados")
         exceptional_path = path.startswith("/configuracion/conceptos-excepcionales")
-        active_profile = str(session_user_data.get("profile") or "").upper()
+        preloads_path = path.startswith("/configuracion/precargas-autorizadas")
         if path.startswith("/configuracion") and not (
             active_role == "ADMIN"
             or ((users_path or holidays_path) and active_role == "RRHH")
-            or (exceptional_path and (active_role == "RRHH" or active_profile == "JEFE"))
+            or (preloads_path and active_role == "RRHH")
+            or (exceptional_path and active_role == "RRHH")
         ):
             return HTMLResponse("Acceso denegado: se requiere el rol ADMIN.", status_code=403)
         return await call_next(request)
@@ -334,10 +335,27 @@ def descripcion_concepto_regla(tipo_hora: str) -> dict[str, str]:
         }
     return {
         "nombre": original,
-        "categoria": "Concepto adicional",
-        "descripcion": "Concepto habilitado por la configuración del convenio. Revisá su observación para conocer el uso previsto.",
+        "categoria": "Concepto de convenio",
+        "descripcion": "Concepto general habilitado por las reglas del convenio. La forma de carga y la cantidad dependen de su configuración vigente.",
         "icono": "bi-plus-circle",
     }
+
+
+def descripcion_modalidad_regla(
+    modalidad_carga: str | None,
+    cantidad_predeterminada: Decimal | None,
+) -> str | None:
+    modalidad = str(modalidad_carga or "").strip().upper()
+    descripciones = {
+        "CARGA_MANUAL": "La cantidad se informa manualmente al realizar la carga.",
+        "CARGA_POR_DIA": "Se registra por cada día seleccionado.",
+    }
+    descripcion = descripciones.get(modalidad)
+    if cantidad_predeterminada is not None:
+        cantidad = format(cantidad_predeterminada, "f").rstrip("0").rstrip(".")
+        detalle = f"Cantidad predeterminada: {cantidad}."
+        return f"{descripcion} {detalle}" if descripcion else detalle
+    return descripcion
 
 
 def descripcion_tipo_dia(convenio: str, tipo_dia: str) -> tuple[str, str, str]:
@@ -379,10 +397,10 @@ def usuarios_habilitados_para_carga(
 ) -> tuple[UsuarioRol, list[Usuario]]:
     assignment = obtener_asignacion_activa(request, db)
     if destino == "rrhh":
-        if assignment.rol.upper() != "RRHH":
+        if assignment.rol.upper() not in {"ADMIN", "RRHH"}:
             raise HTTPException(
                 status_code=403,
-                detail="Sólo RRHH puede realizar cargas administrativas.",
+                detail="Sólo RRHH o ADMIN pueden realizar cargas administrativas.",
             )
         usuarios = list(db.scalars(
             select(Usuario)
@@ -413,11 +431,19 @@ def usuarios_habilitados_para_carga(
 
 
 CODIGO_PERMISO_CARGAS_FC = "PERMISO_CARGAS_FC"
+CODIGO_SWITCHER_NOCTURNIDAD = "SWITCHER_NOCTURNIDAD"
+TIPO_SWITCHER_NOCTURNIDAD = "DERIVADO_NOCTURNIDAD"
+TIPO_PRECARGA_AUTORIZADA = "PRECARGA_AUTORIZADA"
 TIPOS_CONCEPTO_EXCEPCIONAL = (
     "PERMISO",
     "CARGA_POR_DIA",
     "CARGA_MANUAL",
     "PRECARGA_PERIODO",
+    TIPO_SWITCHER_NOCTURNIDAD,
+)
+TIPOS_CONCEPTO_EXCEPCIONAL_CONFIGURABLES = tuple(
+    tipo for tipo in TIPOS_CONCEPTO_EXCEPCIONAL
+    if tipo not in {"PRECARGA_PERIODO", TIPO_SWITCHER_NOCTURNIDAD}
 )
 
 
@@ -482,6 +508,178 @@ def validar_destino_precarga(concepto: ConceptoExcepcional, db: Session) -> None
         raise CalculoHorasError(
             "El tipo de hora a liquidar no está configurado en las reglas de horas."
         )
+
+
+def periodo_precarga_usuario(
+    usuario: Usuario, fecha_referencia: date,
+) -> tuple[date, date]:
+    contratacion = (
+        usuario.tipo_contratacion.contratacion.strip().lower()
+        if usuario.tipo_contratacion is not None else ""
+    )
+    periodos = periodos_rapidos_rrhh(fecha_referencia)
+    if contratacion in {"nómina", "nomina"}:
+        return periodos["nomina"]
+    return periodos["monotributo"]
+
+
+def inicio_periodo_actual_precarga(
+    usuario: Usuario,
+    fecha_referencia: date | None = None,
+) -> date:
+    return periodo_precarga_usuario(
+        usuario, fecha_referencia or date.today(),
+    )[0]
+
+
+def periodos_vigencia_precarga(
+    usuario: Usuario, fecha_desde: date, fecha_hasta: date,
+) -> list[tuple[date, date]]:
+    periodos: list[tuple[date, date]] = []
+    cursor = fecha_desde
+    while cursor <= fecha_hasta:
+        periodo_desde, periodo_hasta = periodo_precarga_usuario(usuario, cursor)
+        if not periodos or periodos[-1][0] != periodo_desde:
+            periodos.append((periodo_desde, periodo_hasta))
+        cursor = periodo_hasta + timedelta(days=1)
+    return periodos
+
+
+def opciones_periodos_precarga(
+    fecha_referencia: date | None = None,
+    meses_anteriores: int = 0,
+    meses_futuros: int = 11,
+) -> dict[str, list[dict[str, str]]]:
+    referencia = fecha_referencia or date.today()
+    inicios_actuales = {
+        "nomina": periodos_rapidos_rrhh(referencia)["nomina"][0],
+        "calendario": referencia.replace(day=1),
+    }
+    opciones: dict[str, list[dict[str, str]]] = {
+        "nomina": [], "calendario": [],
+    }
+    for tipo, inicio_actual in inicios_actuales.items():
+        for desplazamiento in range(-meses_anteriores, meses_futuros + 1):
+            indice_mes = (
+                inicio_actual.year * 12 + inicio_actual.month - 1 + desplazamiento
+            )
+            anio, indice = divmod(indice_mes, 12)
+            inicio = date(anio, indice + 1, 16 if tipo == "nomina" else 1)
+            _, fin = (
+                periodos_rapidos_rrhh(inicio)["nomina"]
+                if tipo == "nomina"
+                else periodos_rapidos_rrhh(inicio)["monotributo"]
+            )
+            opciones[tipo].append({
+                "valor": inicio.isoformat(),
+                "etiqueta": (
+                    f"{inicio.strftime('%d/%m/%Y')} al {fin.strftime('%d/%m/%Y')}"
+                ),
+            })
+    return opciones
+
+
+def generar_precargas_autorizadas(
+    asignacion: UsuarioConceptoExcepcional,
+    concepto: ConceptoExcepcional,
+    usuario: Usuario,
+    aprobado_por: int | None,
+    db: Session,
+) -> int:
+    if (
+        concepto.tipo != "PRECARGA_PERIODO"
+        or asignacion.fecha_hasta is None
+        or asignacion.cantidad_asignada is None
+        or not concepto.tipo_hora_destino
+    ):
+        return 0
+    existentes = set(db.scalars(
+        select(HoraExtra.fecha).where(
+            HoraExtra.usuario_id == usuario.id,
+            HoraExtra.concepto_excepcional_id == concepto.id_concepto_excepcional,
+            HoraExtra.tipo_registro == TIPO_PRECARGA_AUTORIZADA,
+        )
+    ))
+    ahora = datetime.now()
+    creadas = 0
+    for periodo_desde, _ in periodos_vigencia_precarga(
+        usuario, asignacion.fecha_desde, asignacion.fecha_hasta,
+    ):
+        if periodo_desde in existentes:
+            continue
+        db.add(HoraExtra(
+            usuario_id=usuario.id,
+            fecha=periodo_desde,
+            hora_inicio=None,
+            hora_fin=None,
+            horas_totales=None,
+            cantidad=asignacion.cantidad_asignada,
+            concepto_excepcional_id=concepto.id_concepto_excepcional,
+            concepto_excepcional_nombre=concepto.nombre,
+            tipo_dia=clasificar_tipo_dia(periodo_desde, db),
+            tipo_hora=concepto.tipo_hora_destino,
+            horas_nocturnas=None,
+            tipo_registro=TIPO_PRECARGA_AUTORIZADA,
+            solicita_reintegro=False,
+            observaciones=(
+                f"Precarga autorizada por período. {asignacion.observacion or ''}"
+            ).strip(),
+            estado="APROBADA",
+            aprobado_por=aprobado_por,
+            fecha_resolucion=ahora,
+        ))
+        existentes.add(periodo_desde)
+        creadas += 1
+    return creadas
+
+
+def generar_pack_precargas_autorizadas(
+    usuario: Usuario,
+    tipo_hora: str,
+    cantidad: Decimal,
+    fecha_desde: date,
+    fecha_hasta: date,
+    observacion: str,
+    aprobado_por: int,
+    db: Session,
+) -> int:
+    tipo_hora_normalizado = tipo_hora.strip().upper()
+    existentes = set(db.scalars(
+        select(HoraExtra.fecha).where(
+            HoraExtra.usuario_id == usuario.id,
+            HoraExtra.tipo_registro == TIPO_PRECARGA_AUTORIZADA,
+            func.upper(HoraExtra.tipo_hora) == tipo_hora_normalizado,
+        )
+    ))
+    ahora = datetime.now()
+    creadas = 0
+    for periodo_desde, _ in periodos_vigencia_precarga(
+        usuario, fecha_desde, fecha_hasta,
+    ):
+        if periodo_desde in existentes:
+            continue
+        db.add(HoraExtra(
+            usuario_id=usuario.id,
+            fecha=periodo_desde,
+            hora_inicio=None,
+            hora_fin=None,
+            horas_totales=None,
+            cantidad=cantidad.quantize(Decimal("0.01")),
+            concepto_excepcional_id=None,
+            concepto_excepcional_nombre=None,
+            tipo_dia=clasificar_tipo_dia(periodo_desde, db),
+            tipo_hora=tipo_hora_normalizado,
+            horas_nocturnas=None,
+            tipo_registro=TIPO_PRECARGA_AUTORIZADA,
+            solicita_reintegro=False,
+            observaciones=f"Precarga autorizada por período. {observacion}".strip(),
+            estado="APROBADA",
+            aprobado_por=aprobado_por,
+            fecha_resolucion=ahora,
+        ))
+        existentes.add(periodo_desde)
+        creadas += 1
+    return creadas
 
 
 def usuario_tiene_funciones_carga(usuario: Usuario, db: Session) -> bool:
@@ -552,6 +750,49 @@ def regla_otra_carga(
             func.upper(ReglaHora.tipo_hora) == tipo_hora.strip().upper(),
         ).order_by(ReglaHora.id).limit(1)
     )
+
+
+def conceptos_precarga_por_convenio(db: Session) -> dict[str, list[str]]:
+    conceptos: dict[str, set[str]] = {}
+    reglas = db.execute(select(
+        ReglaHora.convenio,
+        ReglaHora.tipo_hora,
+        ReglaHora.hora_nocturna_desde,
+        ReglaHora.hora_nocturna_hasta,
+    ))
+    for convenio, tipo_hora, nocturna_desde, nocturna_hasta in reglas:
+        convenio_normalizado = str(convenio or "").strip().upper()
+        tipo_normalizado = str(tipo_hora or "").strip().upper()
+        if not convenio_normalizado:
+            continue
+        disponibles = conceptos.setdefault(convenio_normalizado, set())
+        if tipo_normalizado:
+            disponibles.add(tipo_normalizado)
+        if nocturna_desde is not None and nocturna_hasta is not None:
+            disponibles.add("HORAS NOCTURNAS")
+    return {
+        convenio: sorted(disponibles)
+        for convenio, disponibles in conceptos.items()
+    }
+
+
+def concepto_precarga_habilitado(
+    db: Session,
+    convenio: str,
+    tipo_hora: str,
+) -> bool:
+    convenio_normalizado = convenio.strip().upper()
+    tipo_normalizado = tipo_hora.strip().upper()
+    if tipo_normalizado == "HORAS NOCTURNAS":
+        return db.scalar(select(ReglaHora.id).where(
+            func.upper(ReglaHora.convenio) == convenio_normalizado,
+            ReglaHora.hora_nocturna_desde.is_not(None),
+            ReglaHora.hora_nocturna_hasta.is_not(None),
+        ).limit(1)) is not None
+    return db.scalar(select(ReglaHora.id).where(
+        func.upper(ReglaHora.convenio) == convenio_normalizado,
+        func.upper(ReglaHora.tipo_hora) == tipo_normalizado,
+    ).limit(1)) is not None
 
 
 def convenio_permite_hs_articulo(db: Session, convenio: str | None) -> bool:
@@ -656,6 +897,80 @@ def validar_nocturnidad_sin_superposicion(
             )
 
 
+def validar_horas_extra_sin_superposicion_nocturnidad(
+    usuario_id: int,
+    fecha: date,
+    hora_inicio: time,
+    hora_fin: time,
+    db: Session,
+    resultados_borrador: list | None = None,
+    excluir_hora_id: int | None = None,
+) -> None:
+    desde, hasta = intervalo_jornada(fecha, hora_inicio, hora_fin)
+    candidatos = [
+        item for item in (resultados_borrador or [])
+        if item.tipo_registro == "OTRAS"
+        and str(item.tipo_hora or "").strip().upper()
+        in TIPOS_NOCTURNAS_EN_JORNADA
+    ]
+    consulta_existentes = select(HoraExtra).where(
+        HoraExtra.usuario_id == usuario_id,
+        HoraExtra.estado.in_(("PENDIENTE", "APROBADA")),
+        HoraExtra.tipo_registro == "OTRAS",
+        func.upper(HoraExtra.tipo_hora).in_(TIPOS_NOCTURNAS_EN_JORNADA),
+        HoraExtra.hora_inicio.is_not(None),
+        HoraExtra.hora_fin.is_not(None),
+        HoraExtra.fecha >= desde.date() - timedelta(days=1),
+        HoraExtra.fecha <= hasta.date(),
+    )
+    if excluir_hora_id is not None:
+        consulta_existentes = consulta_existentes.where(
+            HoraExtra.id != excluir_hora_id,
+        )
+    candidatos.extend(db.scalars(consulta_existentes))
+    for item in candidatos:
+        if item.hora_inicio is None or item.hora_fin is None:
+            continue
+        item_desde, item_hasta = intervalo_jornada(
+            item.fecha, item.hora_inicio, item.hora_fin,
+        )
+        if desde < item_hasta and item_desde < hasta:
+            raise CalculoHorasError(
+                "Las horas extras se superponen con una jornada nocturna habitual "
+                "pendiente, autorizada o incluida en este borrador."
+            )
+
+
+def validar_exterior_prensa_unico_por_dia(
+    usuario_id: int,
+    fecha: date,
+    db: Session,
+    resultados_borrador: list | None = None,
+    excluir_hora_id: int | None = None,
+) -> None:
+    existe_en_borrador = any(
+        item.usuario_id == usuario_id
+        and item.fecha == fecha
+        and item.tipo_registro == "OTRAS"
+        and str(item.tipo_hora or "").strip().upper() == "EXTERIOR PRENSA"
+        for item in (resultados_borrador or [])
+    )
+    consulta = select(HoraExtra.id).where(
+        HoraExtra.usuario_id == usuario_id,
+        HoraExtra.fecha == fecha,
+        HoraExtra.tipo_registro == "OTRAS",
+        func.upper(HoraExtra.tipo_hora) == "EXTERIOR PRENSA",
+        HoraExtra.estado.in_(("PENDIENTE", "APROBADA")),
+    )
+    if excluir_hora_id is not None:
+        consulta = consulta.where(HoraExtra.id != excluir_hora_id)
+    if existe_en_borrador or db.scalar(consulta.limit(1)) is not None:
+        raise CalculoHorasError(
+            "Ya existe una carga de EXTERIOR PRENSA pendiente, autorizada "
+            "o incluida en este borrador para esa fecha."
+        )
+
+
 def fechas_feriados_sin_devolucion(db: Session) -> list[str]:
     return [
         fecha.isoformat()
@@ -675,7 +990,7 @@ def fechas_feriados(db: Session) -> list[str]:
 
 
 CONCEPTOS_DERIVADOS = {"MERIENDA", "COMIDA"}
-CONCEPTOS_AUTOMATICOS = CONCEPTOS_DERIVADOS | {"DOMINGO"}
+CONCEPTOS_AUTOMATICOS = CONCEPTOS_DERIVADOS | {"DOMINGO", CODIGO_SWITCHER_NOCTURNIDAD}
 
 
 def es_concepto_derivado(hora: HoraExtra) -> bool:
@@ -686,6 +1001,11 @@ def es_concepto_derivado(hora: HoraExtra) -> bool:
 
 
 def es_concepto_automatico(hora: HoraExtra) -> bool:
+    if (
+        hora.tipo_registro == "EXCEPCIONAL"
+        and str(hora.tipo_hora or "").upper() == CODIGO_SWITCHER_NOCTURNIDAD
+    ):
+        return True
     return (
         hora.tipo_registro == "OTRAS"
         and str(hora.tipo_hora or "").upper() in CONCEPTOS_AUTOMATICOS
@@ -695,6 +1015,111 @@ def es_concepto_automatico(hora: HoraExtra) -> bool:
             and hora.hora_fin is not None
         )
     )
+
+
+def cantidad_nocturna_registro(hora: HoraExtra) -> Decimal:
+    if es_concepto_automatico(hora):
+        return Decimal("0.00")
+    if (
+        hora.tipo_registro == "OTRAS"
+        and str(hora.tipo_hora or "").strip().upper()
+        in TIPOS_NOCTURNAS_EN_JORNADA
+    ):
+        return hora.cantidad or Decimal("0.00")
+    return hora.horas_nocturnas or Decimal("0.00")
+
+
+def concepto_switcher_vigente(
+    db: Session, usuario_id: int, fecha: date,
+) -> ConceptoExcepcional | None:
+    return db.scalar(
+        select(ConceptoExcepcional)
+        .join(UsuarioConceptoExcepcional)
+        .where(
+            UsuarioConceptoExcepcional.usuario_id == usuario_id,
+            UsuarioConceptoExcepcional.activo.is_(True),
+            UsuarioConceptoExcepcional.fecha_desde <= fecha,
+            (
+                UsuarioConceptoExcepcional.fecha_hasta.is_(None)
+                | (UsuarioConceptoExcepcional.fecha_hasta >= fecha)
+            ),
+            ConceptoExcepcional.activo.is_(True),
+            func.upper(ConceptoExcepcional.codigo) == CODIGO_SWITCHER_NOCTURNIDAD,
+            ConceptoExcepcional.tipo == TIPO_SWITCHER_NOCTURNIDAD,
+        )
+        .order_by(UsuarioConceptoExcepcional.fecha_desde.desc())
+        .limit(1)
+    )
+
+
+def recalcular_switcher_nocturnidad_estado(
+    usuario_id: int,
+    fecha: date,
+    db: Session,
+    estado: str,
+    aprobado_por: int | None = None,
+    fecha_resolucion: datetime | None = None,
+) -> None:
+    concepto = concepto_switcher_vigente(db, usuario_id, fecha)
+    existentes = list(db.scalars(
+        select(HoraExtra).where(
+            HoraExtra.usuario_id == usuario_id,
+            HoraExtra.fecha == fecha,
+            HoraExtra.estado == estado,
+            HoraExtra.tipo_registro == "EXCEPCIONAL",
+            func.upper(HoraExtra.tipo_hora) == CODIGO_SWITCHER_NOCTURNIDAD,
+        ).order_by(HoraExtra.id)
+    ))
+    fuentes = list(db.scalars(
+        select(HoraExtra).where(
+            HoraExtra.usuario_id == usuario_id,
+            HoraExtra.fecha == fecha,
+            HoraExtra.estado == estado,
+        )
+    ))
+    cantidad = sum(
+        (cantidad_nocturna_registro(item) for item in fuentes),
+        start=Decimal("0.00"),
+    ).quantize(Decimal("0.01"))
+    if concepto is None or cantidad <= 0:
+        for registro in existentes:
+            db.delete(registro)
+        return
+
+    tipo_dia_fuente = next(
+        (
+            item.tipo_dia for item in fuentes
+            if cantidad_nocturna_registro(item) > 0
+        ),
+        clasificar_tipo_dia(fecha, db),
+    )
+
+    registro = existentes[0] if existentes else HoraExtra(
+        usuario_id=usuario_id,
+        fecha=fecha,
+        tipo_dia=tipo_dia_fuente,
+        tipo_hora=CODIGO_SWITCHER_NOCTURNIDAD,
+        tipo_registro="EXCEPCIONAL",
+        estado=estado,
+        fecha_carga=datetime.now(),
+        solicita_reintegro=False,
+    )
+    if not existentes:
+        db.add(registro)
+    registro.concepto_excepcional_id = concepto.id_concepto_excepcional
+    registro.concepto_excepcional_nombre = concepto.nombre
+    registro.tipo_dia = tipo_dia_fuente
+    registro.cantidad = cantidad
+    registro.hora_inicio = None
+    registro.hora_fin = None
+    registro.horas_totales = None
+    registro.horas_nocturnas = None
+    registro.observaciones = f"Cálculo automático sobre {cantidad:.2f} horas nocturnas."
+    if estado == "APROBADA":
+        registro.aprobado_por = aprobado_por
+        registro.fecha_resolucion = fecha_resolucion
+    for duplicado in existentes[1:]:
+        db.delete(duplicado)
 
 
 def es_domingo_sat(usuario: Usuario, fecha: date) -> bool:
@@ -723,6 +1148,104 @@ def existe_domingo_activo_o_en_borrador(
             func.upper(HoraExtra.tipo_hora) == "DOMINGO",
         ).limit(1)
     ) is not None
+
+
+def domingos_alcanzados_por_jornada(
+    usuario: Usuario,
+    fecha: date,
+    hora_inicio: time,
+    hora_fin: time,
+) -> list[date]:
+    if str(usuario.convenio or "").strip().upper() != "SAT":
+        return []
+    return sorted({
+        fecha_tramo
+        for fecha_tramo, inicio_tramo, fin_tramo in dividir_carga_en_fechas(
+            fecha, hora_inicio, hora_fin,
+        )
+        if fecha_tramo.weekday() == 6 and inicio_tramo != fin_tramo
+    })
+
+
+def jornada_activa_justifica_domingo(
+    usuario_id: int,
+    fecha_domingo: date,
+    db: Session,
+    estado: str,
+) -> bool:
+    candidatas = db.scalars(select(HoraExtra).where(
+        HoraExtra.usuario_id == usuario_id,
+        HoraExtra.estado == estado,
+        HoraExtra.hora_inicio.is_not(None),
+        HoraExtra.hora_fin.is_not(None),
+        HoraExtra.fecha >= fecha_domingo - timedelta(days=1),
+        HoraExtra.fecha <= fecha_domingo,
+        (
+            (HoraExtra.tipo_registro == "HORAS")
+            | (HoraExtra.tipo_registro == "DIA_TRABAJADO")
+            | (
+                (HoraExtra.tipo_registro == "OTRAS")
+                & func.upper(HoraExtra.tipo_hora).in_(TIPOS_NOCTURNAS_EN_JORNADA)
+            )
+        ),
+    ))
+    return any(
+        fecha_domingo in domingos_alcanzados_por_jornada(
+            item.usuario, item.fecha, item.hora_inicio, item.hora_fin,
+        )
+        for item in candidatas
+    )
+
+
+def recalcular_domingo_automatico_estado(
+    usuario_id: int,
+    fechas_domingo: set[date],
+    db: Session,
+    estado: str,
+    aprobado_por: int | None = None,
+    fecha_resolucion: datetime | None = None,
+) -> None:
+    usuario = db.get(Usuario, usuario_id)
+    if usuario is None or str(usuario.convenio or "").strip().upper() != "SAT":
+        return
+    for fecha_domingo in fechas_domingo:
+        if fecha_domingo.weekday() != 6:
+            continue
+        automaticos = list(db.scalars(select(HoraExtra).where(
+            HoraExtra.usuario_id == usuario_id,
+            HoraExtra.fecha == fecha_domingo,
+            HoraExtra.estado == estado,
+            HoraExtra.tipo_registro == "OTRAS",
+            func.upper(HoraExtra.tipo_hora) == "DOMINGO",
+            HoraExtra.hora_inicio.is_(None),
+            HoraExtra.hora_fin.is_(None),
+        ).order_by(HoraExtra.id)))
+        corresponde = jornada_activa_justifica_domingo(
+            usuario_id, fecha_domingo, db, estado,
+        )
+        if not corresponde:
+            for registro in automaticos:
+                db.delete(registro)
+            continue
+        if automaticos:
+            for duplicado in automaticos[1:]:
+                db.delete(duplicado)
+            continue
+        resultado = calcular_resultado_domingo(usuario_id, fecha_domingo, db)
+        db.add(HoraExtra(
+            usuario_id=usuario_id,
+            fecha=fecha_domingo,
+            tipo_dia=resultado.tipo_dia,
+            tipo_hora=resultado.tipo_hora,
+            tipo_registro="OTRAS",
+            cantidad=resultado.cantidad,
+            estado=estado,
+            aprobado_por=aprobado_por if estado == "APROBADA" else None,
+            fecha_carga=datetime.now(),
+            fecha_resolucion=fecha_resolucion if estado == "APROBADA" else None,
+            solicita_reintegro=False,
+            observaciones="Cálculo automático por trabajo realizado en domingo.",
+        ))
 
 
 def fecha_jornada_de_hora_estado(
@@ -896,16 +1419,28 @@ def recalcular_conceptos_jornada_estado(
 def conceptos_automaticos_borrador(
     resultados: list,
     db: Session,
-) -> tuple[list[dict], list[str | None]]:
-    """Proyecta comida y merienda sin incorporarlas a las cargas confirmables."""
+) -> tuple[list[dict], list[str | None], list[str | None]]:
+    """Proyecta conceptos derivados sin incorporarlos a las cargas confirmables."""
     cierres_medianoche = {
         (item.usuario_id, item.fecha)
         for item in resultados
         if item.tipo_registro == "HORAS" and item.hora_fin == time(0, 0)
     }
     claves: list[str | None] = []
+    claves_nocturnidad: list[str | None] = []
     grupos: dict[tuple[int, date], dict] = {}
+    grupos_nocturnidad: dict[tuple[int, date], dict] = {}
     for item in resultados:
+        cantidad_nocturna = cantidad_nocturna_registro(item)
+        clave_nocturna = None
+        if cantidad_nocturna > 0:
+            clave_nocturna = f"nocturna:{item.usuario_id}:{item.fecha.isoformat()}"
+            grupo_nocturno = grupos_nocturnidad.setdefault(
+                (item.usuario_id, item.fecha),
+                {"muestra": item, "cantidad_borrador": Decimal("0.00"), "clave": clave_nocturna},
+            )
+            grupo_nocturno["cantidad_borrador"] += cantidad_nocturna
+        claves_nocturnidad.append(clave_nocturna)
         if item.tipo_registro != "HORAS":
             claves.append(None)
             continue
@@ -924,9 +1459,6 @@ def conceptos_automaticos_borrador(
             "clave": clave_html,
         })
         grupo["horas_borrador"] += item.horas_totales or Decimal("0.00")
-
-    if not grupos:
-        return [], claves
 
     convenios = {
         str(grupo["muestra"].convenio or "").strip().upper()
@@ -972,8 +1504,41 @@ def conceptos_automaticos_borrador(
                 "divisor": divisor,
                 "horas_existentes": horas_existentes,
                 "observaciones": f"Cálculo automático sobre {total:.2f} horas extras.",
+                "modo": "DIVISOR",
             })
-    return conceptos, claves
+    for (usuario_id, fecha_carga), grupo in grupos_nocturnidad.items():
+        concepto = concepto_switcher_vigente(db, usuario_id, fecha_carga)
+        if concepto is None:
+            continue
+        fuentes_existentes = db.scalars(select(HoraExtra).where(
+            HoraExtra.usuario_id == usuario_id,
+            HoraExtra.fecha == fecha_carga,
+            HoraExtra.estado == "PENDIENTE",
+        ))
+        cantidad_existente = sum(
+            (cantidad_nocturna_registro(item) for item in fuentes_existentes),
+            start=Decimal("0.00"),
+        )
+        total = (cantidad_existente + grupo["cantidad_borrador"]).quantize(
+            Decimal("0.01"),
+        )
+        if total <= 0:
+            continue
+        muestra = grupo["muestra"]
+        conceptos.append({
+            "usuario_nombre": muestra.usuario_nombre,
+            "legajo": muestra.legajo,
+            "fecha": fecha_carga,
+            "tipo_dia": muestra.tipo_dia,
+            "tipo_hora": concepto.nombre,
+            "cantidad": total,
+            "clave": grupo["clave"],
+            "divisor": None,
+            "horas_existentes": cantidad_existente,
+            "observaciones": f"Cálculo automático sobre {total:.2f} horas nocturnas.",
+            "modo": "NOCTURNIDAD",
+        })
+    return conceptos, claves, claves_nocturnidad
 
 
 def expandir_ids_con_jornadas_pendientes(
@@ -987,11 +1552,17 @@ def expandir_ids_con_jornadas_pendientes(
         )
     ))
     jornadas: set[tuple[int, date]] = set()
+    fechas_nocturnas: set[tuple[int, date]] = set()
     for item in seleccionadas:
         if item.tipo_registro == "HORAS":
             jornadas.add((item.usuario_id, fecha_jornada_de_hora_pendiente(item, db)))
         elif es_concepto_automatico(item):
             jornadas.add((item.usuario_id, item.fecha))
+        if cantidad_nocturna_registro(item) > 0 or (
+            item.tipo_registro == "EXCEPCIONAL"
+            and str(item.tipo_hora or "").upper() == CODIGO_SWITCHER_NOCTURNIDAD
+        ):
+            fechas_nocturnas.add((item.usuario_id, item.fecha))
     expandidos = set(ids)
     for usuario_id, fecha_jornada in jornadas:
         expandidos.update(item.id for item in horas_pendientes_de_jornada(
@@ -1006,6 +1577,28 @@ def expandir_ids_con_jornadas_pendientes(
                 func.upper(HoraExtra.tipo_hora).in_(CONCEPTOS_AUTOMATICOS),
             )
         ))
+        expandidos.update(db.scalars(
+            select(HoraExtra.id).where(
+                HoraExtra.usuario_id == usuario_id,
+                HoraExtra.fecha == fecha_jornada,
+                HoraExtra.estado == "PENDIENTE",
+                HoraExtra.tipo_registro == "EXCEPCIONAL",
+                func.upper(HoraExtra.tipo_hora) == CODIGO_SWITCHER_NOCTURNIDAD,
+            )
+        ))
+    for usuario_id, fecha in fechas_nocturnas:
+        candidatos = db.scalars(select(HoraExtra).where(
+            HoraExtra.usuario_id == usuario_id,
+            HoraExtra.fecha == fecha,
+            HoraExtra.estado == "PENDIENTE",
+        ))
+        expandidos.update(
+            item.id for item in candidatos
+            if cantidad_nocturna_registro(item) > 0 or (
+                item.tipo_registro == "EXCEPCIONAL"
+                and str(item.tipo_hora or "").upper() == CODIGO_SWITCHER_NOCTURNIDAD
+            )
+        )
     return sorted(expandidos)
 
 
@@ -1438,6 +2031,9 @@ def reglas_interactivas(request: Request, db: Session = Depends(get_db)):
             "nocturna_hasta": regla.hora_nocturna_hasta.strftime("%H:%M") if regla.hora_nocturna_hasta else None,
             "permite_reintegro": bool(regla.permite_reintegro),
             "observaciones": regla.observaciones,
+            "modalidad": descripcion_modalidad_regla(
+                regla.modalidad_carga, regla.cantidad_predeterminada,
+            ),
         })
     for convenio, grupos in grupos_por_convenio.items():
         for tipo_dia in ("FRANCO", "FERIADO"):
@@ -1453,6 +2049,7 @@ def reglas_interactivas(request: Request, db: Session = Depends(get_db)):
                 "nocturna_hasta": None,
                 "permite_reintegro": False,
                 "observaciones": None,
+                "modalidad": None,
             })
         franja = franja_nocturna_convenio(db, convenio)
         if franja:
@@ -1474,6 +2071,7 @@ def reglas_interactivas(request: Request, db: Session = Depends(get_db)):
                 "nocturna_hasta": franja[1].strftime("%H:%M"),
                 "permite_reintegro": False,
                 "observaciones": "Puede cargarse por fechas específicas o por un período habitual.",
+                "modalidad": None,
             })
     orden_dias = {"HABIL": 0, "FRANCO": 1, "FERIADO": 2, "DOMINGO": 3, "TODOS": 4}
     dias_por_convenio = {
@@ -1567,8 +2165,8 @@ def home(
 
 def require_rrhh_role(request: Request) -> None:
     role = str((request.session.get("user") or {}).get("role") or "").upper()
-    if role != "RRHH":
-        raise HTTPException(status_code=403, detail="Se requiere el rol RRHH.")
+    if role not in {"ADMIN", "RRHH"}:
+        raise HTTPException(status_code=403, detail="Se requiere el rol RRHH o ADMIN.")
 
 
 def acceso_conceptos_excepcionales(
@@ -1576,8 +2174,11 @@ def acceso_conceptos_excepcionales(
 ) -> tuple[UsuarioRol, bool]:
     asignacion = obtener_asignacion_activa(request, db)
     administra_catalogo = asignacion.rol.upper() in {"ADMIN", "RRHH"}
-    if not administra_catalogo and asignacion.perfil.upper() != "JEFE":
-        raise HTTPException(status_code=403, detail="No tenés permiso para administrar excepciones.")
+    if not administra_catalogo:
+        raise HTTPException(
+            status_code=403,
+            detail="Sólo RRHH o ADMIN pueden administrar conceptos excepcionales.",
+        )
     return asignacion, administra_catalogo
 
 
@@ -1770,12 +2371,12 @@ def rrhh_horas_extras(
         int(usuario_id) if usuario_id and usuario_id.isdigit() else None
     )
     asignacion = obtener_asignacion_activa(request, db)
-    es_rrhh = asignacion.rol.upper() == "RRHH"
+    es_rrhh = asignacion.rol.upper() in {"ADMIN", "RRHH"}
     vista_jefe = asignacion.perfil.upper() == "JEFE" and not es_rrhh
     if not es_rrhh and not vista_jefe:
         raise HTTPException(
             status_code=403,
-            detail="Se requiere el rol RRHH o un perfil Jefe.",
+            detail="Se requiere el rol RRHH, ADMIN o un perfil Jefe.",
         )
     contrataciones = list(dict.fromkeys(contratacion or []))
     convenios = [item.upper() for item in dict.fromkeys(convenio or []) if item.upper() in CONVENIOS_DISPONIBLES]
@@ -1910,6 +2511,12 @@ def conceptos_exportables_hora(hora: HoraExtra) -> list[tuple[str, Decimal]]:
     tipo_dia = str(hora.tipo_dia or "").upper()
     if tipo_registro == "HORAS" and hora.tipo_hora and hora.horas_totales:
         conceptos.append((hora.tipo_hora, hora.horas_totales))
+    elif (
+        tipo_registro == TIPO_PRECARGA_AUTORIZADA
+        and hora.tipo_hora
+        and hora.cantidad
+    ):
+        conceptos.append((hora.tipo_hora, hora.cantidad))
     elif tipo_registro == "OTRAS" and hora.tipo_hora and hora.cantidad:
         conceptos.append((hora.tipo_hora, hora.cantidad))
     elif tipo_registro == "EXCEPCIONAL" and hora.concepto_excepcional_nombre and hora.cantidad:
@@ -1939,7 +2546,7 @@ def consulta_cargas_exportacion_rrhh(
     consulta = (
         select(HoraExtra)
         .join(HoraExtra.usuario)
-        .options(selectinload(HoraExtra.usuario))
+        .options(selectinload(HoraExtra.usuario).selectinload(Usuario.tipo_contratacion))
         .where(HoraExtra.estado == "APROBADA")
     )
     return aplicar_filtros_rrhh(
@@ -2235,7 +2842,7 @@ def renderizar_borrador_solicitud(
         limites_fecha_carga_usuario(usuarios[0])
         if usuarios else (None, None, None)
     )
-    conceptos_automaticos, claves_jornada = conceptos_automaticos_borrador(
+    conceptos_automaticos, claves_jornada, claves_nocturnidad = conceptos_automaticos_borrador(
         resultados, db,
     )
     franja_nocturna = franja_nocturna_convenio(
@@ -2250,6 +2857,7 @@ def renderizar_borrador_solicitud(
             "active_page": "rrhh_carga" if destino == "rrhh" else "horas",
             "resultados": resultados,
             "claves_jornada": claves_jornada,
+            "claves_nocturnidad": claves_nocturnidad,
             "conceptos_automaticos": conceptos_automaticos,
             "observaciones_resultados": observaciones_resultados,
             "fechas_descanso": fechas_descanso,
@@ -2603,6 +3211,21 @@ def procesar_solicitud(
                         resultado, fecha_seleccionada, jornada_nocturna_inicio,
                         jornada_nocturna_fin, "OTRAS", False,
                     ))
+                    for fecha_domingo in domingos_alcanzados_por_jornada(
+                        usuario_carga, fecha_seleccionada,
+                        jornada_nocturna_inicio, jornada_nocturna_fin,
+                    ):
+                        if existe_domingo_activo_o_en_borrador(
+                            usuario_id, fecha_domingo,
+                            resultados + [item[0] for item in nuevos_items], db,
+                        ):
+                            continue
+                        domingo = calcular_resultado_domingo(
+                            usuario_id, fecha_domingo, db,
+                        )
+                        nuevos_items.append((
+                            domingo, fecha_domingo, None, None, "OTRAS", False,
+                        ))
                 if not nuevos_items:
                     raise CalculoHorasError(
                         "Todas las fechas del período fueron omitidas por feriados o cargas superpuestas."
@@ -2946,6 +3569,25 @@ def procesar_solicitud(
             raise CalculoHorasError("El tipo de registro seleccionado no es válido.")
 
         nuevos_resultados = [item[0] for item in nuevos_items]
+        borrador_completo = resultados + nuevos_resultados
+        resultados_validados = list(resultados)
+        for resultado in nuevos_resultados:
+            if resultado.tipo_registro == "HORAS":
+                validar_horas_extra_sin_superposicion_nocturnidad(
+                    resultado.usuario_id, resultado.fecha,
+                    resultado.hora_inicio, resultado.hora_fin, db,
+                    borrador_completo,
+                )
+            if (
+                resultado.tipo_registro == "OTRAS"
+                and str(resultado.tipo_hora or "").strip().upper()
+                == "EXTERIOR PRENSA"
+            ):
+                validar_exterior_prensa_unico_por_dia(
+                    resultado.usuario_id, resultado.fecha, db,
+                    resultados_validados,
+                )
+            resultados_validados.append(resultado)
         resultados.extend(nuevos_resultados)
         evitar_nocturnidad_duplicada_en_jornada(resultados)
         observaciones_nuevas = [
@@ -3007,8 +3649,8 @@ def confirmar_solicitud(
     try:
         carga_administrativa = destino == "rrhh"
         asignacion_activa = obtener_asignacion_activa(request, db)
-        if carga_administrativa and asignacion_activa.rol.upper() != "RRHH":
-            raise CalculoHorasError("Sólo RRHH puede confirmar cargas administrativas.")
+        if carga_administrativa and asignacion_activa.rol.upper() not in {"ADMIN", "RRHH"}:
+            raise CalculoHorasError("Sólo RRHH o ADMIN pueden confirmar cargas administrativas.")
         autorizador_id = asignacion_activa.usuario_id if carga_administrativa else None
         fecha_resolucion = datetime.now() if carga_administrativa else None
         estado_inicial = "APROBADA" if carga_administrativa else "PENDIENTE"
@@ -3056,6 +3698,21 @@ def confirmar_solicitud(
                 validar_nocturnidad_sin_superposicion(
                     resultado.usuario_id, resultado.fecha,
                     resultado.hora_inicio, resultado.hora_fin, db,
+                    resultados_confirmacion,
+                )
+            if resultado.tipo_registro == "HORAS":
+                validar_horas_extra_sin_superposicion_nocturnidad(
+                    resultado.usuario_id, resultado.fecha,
+                    resultado.hora_inicio, resultado.hora_fin, db,
+                    resultados_confirmacion,
+                )
+            if (
+                resultado.tipo_registro == "OTRAS"
+                and str(resultado.tipo_hora or "").strip().upper()
+                == "EXTERIOR PRENSA"
+            ):
+                validar_exterior_prensa_unico_por_dia(
+                    resultado.usuario_id, resultado.fecha, db,
                     resultados_confirmacion,
                 )
             resultados_confirmacion.append(resultado)
@@ -3173,6 +3830,15 @@ def confirmar_solicitud(
                 aprobado_por=autorizador_id,
                 fecha_resolucion=fecha_resolucion,
             )
+        for usuario_id, fecha_switcher in {
+            (resultado.usuario_id, resultado.fecha)
+            for resultado in resultados_confirmacion
+        }:
+            recalcular_switcher_nocturnidad_estado(
+                usuario_id, fecha_switcher, db, estado_inicial,
+                aprobado_por=autorizador_id,
+                fecha_resolucion=fecha_resolucion,
+            )
         db.commit()
     except (CalculoHorasError, SQLAlchemyError) as error:
         db.rollback()
@@ -3207,6 +3873,296 @@ def confirmar_solicitud(
             status_code=303,
         )
     return RedirectResponse(f"/horas?guardado={len(cargas)}", status_code=303)
+
+
+@app.get("/configuracion/precargas-autorizadas", response_class=HTMLResponse)
+def administrar_precargas_autorizadas(
+    request: Request,
+    guardado: str | None = None,
+    error: str | None = None,
+    editar: int | None = None,
+    db: Session = Depends(get_db),
+):
+    asignacion = obtener_asignacion_activa(request, db)
+    if asignacion.rol.upper() not in {"ADMIN", "RRHH"}:
+        raise HTTPException(
+            status_code=403,
+            detail="Sólo RRHH o ADMIN pueden administrar precargas autorizadas.",
+        )
+    usuarios = list(db.scalars(
+        select(Usuario)
+        .options(selectinload(Usuario.tipo_contratacion))
+        .where(Usuario.status.is_(True), Usuario.convenio.is_not(None))
+        .order_by(Usuario.apellido, Usuario.nombre)
+    ))
+    conceptos_por_convenio = conceptos_precarga_por_convenio(db)
+    precargas = list(db.scalars(
+        select(HoraExtra)
+        .join(HoraExtra.usuario)
+        .options(
+            selectinload(HoraExtra.usuario).selectinload(Usuario.tipo_contratacion)
+        )
+        .where(HoraExtra.tipo_registro == TIPO_PRECARGA_AUTORIZADA)
+        .order_by(HoraExtra.fecha.desc(), Usuario.apellido, Usuario.nombre)
+    ))
+    grupos_pack: dict[tuple, dict] = {}
+    for precarga in precargas:
+        clave = (
+            precarga.usuario_id,
+            str(precarga.tipo_hora or "").upper(),
+            precarga.cantidad,
+            precarga.observaciones,
+            precarga.fecha_resolucion or precarga.id,
+        )
+        grupo = grupos_pack.setdefault(clave, {
+            "id": precarga.id,
+            "usuario": precarga.usuario,
+            "tipo_hora": precarga.tipo_hora,
+            "cantidad": precarga.cantidad,
+            "observaciones": precarga.observaciones,
+            "fecha_desde": precarga.fecha,
+            "fecha_hasta": precarga.fecha,
+            "filas": [],
+        })
+        grupo["filas"].append(precarga)
+        grupo["fecha_desde"] = min(grupo["fecha_desde"], precarga.fecha)
+        grupo["fecha_hasta"] = max(grupo["fecha_hasta"], precarga.fecha)
+    packs = list(grupos_pack.values())
+    for pack in packs:
+        inicio_actual = inicio_periodo_actual_precarga(pack["usuario"])
+        pack["tiene_periodos_modificables"] = any(
+            fila.fecha >= inicio_actual for fila in pack["filas"]
+        )
+    pack_edicion = next((item for item in packs if item["id"] == editar), None)
+    if editar is not None and pack_edicion is None:
+        error = "El pack seleccionado no existe."
+    elif pack_edicion is not None and not pack_edicion["tiene_periodos_modificables"]:
+        error = "El pack es histórico y ya no puede modificarse."
+        pack_edicion = None
+    periodos_edicion = []
+    conceptos_edicion = []
+    if pack_edicion is not None:
+        usuario_edicion = pack_edicion["usuario"]
+        contratacion = (
+            usuario_edicion.tipo_contratacion.contratacion.strip().lower()
+            if usuario_edicion.tipo_contratacion is not None else ""
+        )
+        tipo_periodo = "nomina" if contratacion in {"nómina", "nomina"} else "calendario"
+        periodos_edicion = opciones_periodos_precarga()[tipo_periodo]
+        conceptos_edicion = conceptos_por_convenio.get(
+            str(usuario_edicion.convenio or "").upper(), [],
+        )
+    return templates.TemplateResponse(request, "precargas_autorizadas.html", {
+        "active_page": "precargas_autorizadas",
+        "usuarios": usuarios,
+        "conceptos_por_convenio": conceptos_por_convenio,
+        "packs": packs,
+        "pack_edicion": pack_edicion,
+        "periodos_edicion": periodos_edicion,
+        "conceptos_edicion": conceptos_edicion,
+        "fecha_hoy": date.today().isoformat(),
+        "periodos_precarga": opciones_periodos_precarga(),
+        "guardado": guardado,
+        "error": error,
+    })
+
+
+@app.post("/configuracion/precargas-autorizadas")
+def crear_pack_precargas_autorizadas(
+    request: Request,
+    usuario_id: Annotated[int, Form()],
+    tipo_hora: Annotated[str, Form()],
+    cantidad: Annotated[Decimal, Form()],
+    periodo_desde: Annotated[date, Form()],
+    periodo_hasta: Annotated[date, Form()],
+    observacion: Annotated[str, Form()],
+    db: Session = Depends(get_db),
+):
+    asignacion = obtener_asignacion_activa(request, db)
+    if asignacion.rol.upper() not in {"ADMIN", "RRHH"}:
+        raise HTTPException(
+            status_code=403,
+            detail="Sólo RRHH o ADMIN pueden administrar precargas autorizadas.",
+        )
+    usuario = db.scalar(
+        select(Usuario)
+        .options(selectinload(Usuario.tipo_contratacion))
+        .where(Usuario.id == usuario_id, Usuario.status.is_(True))
+    )
+    if usuario is None or not usuario.convenio:
+        raise HTTPException(status_code=422, detail="El usuario no está habilitado.")
+    inicio_desde, _ = periodo_precarga_usuario(usuario, periodo_desde)
+    inicio_hasta, fecha_hasta_real = periodo_precarga_usuario(usuario, periodo_hasta)
+    if periodo_desde != inicio_desde or periodo_hasta != inicio_hasta:
+        raise HTTPException(
+            status_code=422,
+            detail="Seleccioná períodos completos válidos para la contratación del usuario.",
+        )
+    if periodo_desde < inicio_periodo_actual_precarga(usuario):
+        raise HTTPException(
+            status_code=422,
+            detail="No se pueden generar precargas para períodos anteriores al actual.",
+        )
+    if periodo_hasta < periodo_desde:
+        raise HTTPException(
+            status_code=422,
+            detail="El período final no puede ser anterior al período inicial.",
+        )
+    if len(periodos_vigencia_precarga(usuario, periodo_desde, fecha_hasta_real)) > 12:
+        raise HTTPException(
+            status_code=422,
+            detail="Un pack puede abarcar como máximo 12 períodos.",
+        )
+    if cantidad <= 0:
+        raise HTTPException(status_code=422, detail="La cantidad debe ser mayor que cero.")
+    observacion_limpia = observacion.strip()
+    if not observacion_limpia:
+        raise HTTPException(status_code=422, detail="El motivo del pack es obligatorio.")
+    tipo_hora_normalizado = tipo_hora.strip().upper()
+    if not concepto_precarga_habilitado(
+        db, usuario.convenio, tipo_hora_normalizado,
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="El concepto no está disponible para el convenio del usuario.",
+        )
+    creadas = generar_pack_precargas_autorizadas(
+        usuario, tipo_hora_normalizado, cantidad, periodo_desde, fecha_hasta_real,
+        observacion_limpia, asignacion.usuario_id, db,
+    )
+    db.commit()
+    mensaje = f"pack creado: {creadas} precargas autorizadas generadas"
+    return RedirectResponse(
+        "/configuracion/precargas-autorizadas?guardado=" + quote(mensaje),
+        status_code=303,
+    )
+
+
+def filas_de_pack_precarga(pack_id: int, db: Session) -> list[HoraExtra]:
+    representante = db.get(HoraExtra, pack_id)
+    if (
+        representante is None
+        or representante.tipo_registro != TIPO_PRECARGA_AUTORIZADA
+    ):
+        return []
+    condiciones = [
+        HoraExtra.usuario_id == representante.usuario_id,
+        HoraExtra.tipo_registro == TIPO_PRECARGA_AUTORIZADA,
+        HoraExtra.tipo_hora == representante.tipo_hora,
+        HoraExtra.cantidad == representante.cantidad,
+        HoraExtra.observaciones == representante.observaciones,
+    ]
+    if representante.fecha_resolucion is None:
+        condiciones.append(HoraExtra.id == representante.id)
+    else:
+        condiciones.append(HoraExtra.fecha_resolucion == representante.fecha_resolucion)
+    return list(db.scalars(
+        select(HoraExtra).where(*condiciones).order_by(HoraExtra.fecha)
+    ))
+
+
+@app.post("/configuracion/precargas-autorizadas/{pack_id}/editar")
+def editar_pack_precargas_autorizadas(
+    pack_id: int,
+    request: Request,
+    tipo_hora: Annotated[str, Form()],
+    cantidad: Annotated[Decimal, Form()],
+    periodo_desde: Annotated[date, Form()],
+    periodo_hasta: Annotated[date, Form()],
+    observacion: Annotated[str, Form()],
+    db: Session = Depends(get_db),
+):
+    asignacion = obtener_asignacion_activa(request, db)
+    if asignacion.rol.upper() not in {"ADMIN", "RRHH"}:
+        raise HTTPException(status_code=403, detail="No tenés permiso para editar packs.")
+    filas = filas_de_pack_precarga(pack_id, db)
+    if not filas:
+        raise HTTPException(status_code=404, detail="El pack no existe.")
+    usuario = db.scalar(
+        select(Usuario)
+        .options(selectinload(Usuario.tipo_contratacion))
+        .where(Usuario.id == filas[0].usuario_id)
+    )
+    if usuario is None or not usuario.convenio:
+        raise HTTPException(status_code=422, detail="El usuario no está habilitado.")
+    inicio_desde, _ = periodo_precarga_usuario(usuario, periodo_desde)
+    inicio_hasta, fecha_hasta_real = periodo_precarga_usuario(usuario, periodo_hasta)
+    if periodo_desde != inicio_desde or periodo_hasta != inicio_hasta:
+        raise HTTPException(status_code=422, detail="Los períodos seleccionados no son válidos.")
+    inicio_actual = inicio_periodo_actual_precarga(usuario)
+    if periodo_desde < inicio_actual:
+        raise HTTPException(
+            status_code=422,
+            detail="La edición sólo puede comenzar en el período actual o uno futuro.",
+        )
+    if periodo_hasta < periodo_desde or cantidad <= 0 or not observacion.strip():
+        raise HTTPException(status_code=422, detail="Revisá el rango, la cantidad y el motivo.")
+    if len(periodos_vigencia_precarga(usuario, periodo_desde, fecha_hasta_real)) > 12:
+        raise HTTPException(
+            status_code=422,
+            detail="Un pack puede abarcar como máximo 12 períodos.",
+        )
+    tipo_hora_normalizado = tipo_hora.strip().upper()
+    if not concepto_precarga_habilitado(
+        db, usuario.convenio, tipo_hora_normalizado,
+    ):
+        raise HTTPException(status_code=422, detail="El concepto no corresponde al convenio.")
+    filas_modificables = [fila for fila in filas if fila.fecha >= inicio_actual]
+    if not filas_modificables:
+        raise HTTPException(
+            status_code=409,
+            detail="El pack es histórico y ya no puede modificarse.",
+        )
+    for fila in filas_modificables:
+        db.delete(fila)
+    db.flush()
+    creadas = generar_pack_precargas_autorizadas(
+        usuario, tipo_hora_normalizado, cantidad, periodo_desde,
+        fecha_hasta_real, observacion.strip(), asignacion.usuario_id, db,
+    )
+    db.commit()
+    return RedirectResponse(
+        "/configuracion/precargas-autorizadas?guardado="
+        + quote(f"pack actualizado: {creadas} precargas generadas"),
+        status_code=303,
+    )
+
+
+@app.post("/configuracion/precargas-autorizadas/{pack_id}/eliminar")
+def eliminar_pack_precargas_autorizadas(
+    pack_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    asignacion = obtener_asignacion_activa(request, db)
+    if asignacion.rol.upper() not in {"ADMIN", "RRHH"}:
+        raise HTTPException(status_code=403, detail="No tenés permiso para eliminar packs.")
+    filas = filas_de_pack_precarga(pack_id, db)
+    if not filas:
+        raise HTTPException(status_code=404, detail="El pack no existe.")
+    usuario = db.scalar(
+        select(Usuario)
+        .options(selectinload(Usuario.tipo_contratacion))
+        .where(Usuario.id == filas[0].usuario_id)
+    )
+    if usuario is None:
+        raise HTTPException(status_code=404, detail="El usuario del pack no existe.")
+    inicio_actual = inicio_periodo_actual_precarga(usuario)
+    filas_modificables = [fila for fila in filas if fila.fecha >= inicio_actual]
+    if not filas_modificables:
+        raise HTTPException(
+            status_code=409,
+            detail="El pack es histórico y ya no puede eliminarse.",
+        )
+    for fila in filas_modificables:
+        db.delete(fila)
+    cantidad_eliminada = len(filas_modificables)
+    db.commit()
+    return RedirectResponse(
+        "/configuracion/precargas-autorizadas?guardado="
+        + quote(f"pack eliminado: {cantidad_eliminada} precargas removidas"),
+        status_code=303,
+    )
 
 
 @app.get("/configuracion/conceptos-excepcionales", response_class=HTMLResponse)
@@ -3271,8 +4227,11 @@ def administrar_conceptos_excepcionales(
     return templates.TemplateResponse(request, "conceptos_excepcionales.html", {
         "active_page": "conceptos_excepcionales",
         "conceptos": conceptos,
-        "conceptos_activos": [item for item in conceptos if item.activo],
-        "tipos_concepto": TIPOS_CONCEPTO_EXCEPCIONAL,
+        "conceptos_activos": [
+            item for item in conceptos
+            if item.activo and item.tipo != "PRECARGA_PERIODO"
+        ],
+        "tipos_concepto": TIPOS_CONCEPTO_EXCEPCIONAL_CONFIGURABLES,
         "tipos_hora_destino": tipos_hora_destino,
         "usuarios": usuarios,
         "asignaciones": asignaciones,
@@ -3282,6 +4241,7 @@ def administrar_conceptos_excepcionales(
         "guardado": guardado,
         "error": error,
         "fecha_hoy": date.today().isoformat(),
+        "solo_precargas": False,
     })
 
 
@@ -3296,11 +4256,22 @@ def crear_concepto_excepcional(
     tipo_hora_destino: Annotated[str | None, Form()] = None,
     requiere_observacion: Annotated[str | None, Form()] = None,
     requiere_autorizacion: Annotated[str | None, Form()] = None,
+    vista: str | None = None,
     db: Session = Depends(get_db),
 ):
     _, administra_catalogo = acceso_conceptos_excepcionales(request, db)
     if not administra_catalogo:
         raise HTTPException(status_code=403, detail="Sólo RRHH o ADMIN pueden crear conceptos.")
+    if tipo.strip().upper() == TIPO_SWITCHER_NOCTURNIDAD:
+        raise HTTPException(
+            status_code=409,
+            detail="El concepto switcher_nocturnidad es administrado por el sistema.",
+        )
+    if tipo.strip().upper() == "PRECARGA_PERIODO":
+        raise HTTPException(
+            status_code=409,
+            detail="Las precargas se arman con conceptos generales del convenio.",
+        )
     concepto = ConceptoExcepcional(
         activo=True,
         creado_por=(request.session.get("user") or {}).get("id"),
@@ -3314,7 +4285,8 @@ def crear_concepto_excepcional(
         validar_destino_precarga(concepto, db)
     except CalculoHorasError as error_configuracion:
         return RedirectResponse(
-            "/configuracion/conceptos-excepcionales?error="
+            "/configuracion/conceptos-excepcionales?"
+            + ("vista=precargas&" if vista == "precargas" else "") + "error="
             + quote(str(error_configuracion)), status_code=303,
         )
     db.add(concepto)
@@ -3322,8 +4294,8 @@ def crear_concepto_excepcional(
         db.commit()
     except IntegrityError:
         db.rollback()
-        return RedirectResponse("/configuracion/conceptos-excepcionales?error=Ya+existe+un+concepto+con+ese+nombre+o+código", status_code=303)
-    return RedirectResponse("/configuracion/conceptos-excepcionales?guardado=concepto+creado", status_code=303)
+        return RedirectResponse("/configuracion/conceptos-excepcionales?" + ("vista=precargas&" if vista == "precargas" else "") + "error=Ya+existe+un+concepto+con+ese+nombre+o+código", status_code=303)
+    return RedirectResponse("/configuracion/conceptos-excepcionales?" + ("vista=precargas&" if vista == "precargas" else "") + "guardado=concepto+creado", status_code=303)
 
 
 @app.post("/configuracion/conceptos-excepcionales/{concepto_id:int}")
@@ -3339,6 +4311,7 @@ def actualizar_concepto_excepcional(
     requiere_observacion: Annotated[str | None, Form()] = None,
     requiere_autorizacion: Annotated[str | None, Form()] = None,
     activo: Annotated[str | None, Form()] = None,
+    vista: str | None = None,
     db: Session = Depends(get_db),
 ):
     _, administra_catalogo = acceso_conceptos_excepcionales(request, db)
@@ -3347,6 +4320,11 @@ def actualizar_concepto_excepcional(
     concepto = db.get(ConceptoExcepcional, concepto_id)
     if concepto is None:
         raise HTTPException(status_code=404, detail="El concepto no existe.")
+    if concepto.tipo == TIPO_SWITCHER_NOCTURNIDAD:
+        raise HTTPException(
+            status_code=409,
+            detail="El concepto switcher_nocturnidad es administrado por el sistema.",
+        )
     try:
         configurar_concepto_excepcional(
             concepto, nombre, codigo, tipo, descripcion,
@@ -3367,7 +4345,8 @@ def actualizar_concepto_excepcional(
     except CalculoHorasError as error_configuracion:
         db.rollback()
         return RedirectResponse(
-            "/configuracion/conceptos-excepcionales?error="
+            "/configuracion/conceptos-excepcionales?"
+            + ("vista=precargas&" if vista == "precargas" else "") + "error="
             + quote(str(error_configuracion)), status_code=303,
         )
     concepto.activo = activo == "on"
@@ -3376,7 +4355,7 @@ def actualizar_concepto_excepcional(
     except IntegrityError as error_db:
         db.rollback()
         raise HTTPException(status_code=422, detail="Ya existe un concepto con ese nombre o código.") from error_db
-    return RedirectResponse("/configuracion/conceptos-excepcionales?guardado=concepto+actualizado", status_code=303)
+    return RedirectResponse("/configuracion/conceptos-excepcionales?" + ("vista=precargas&" if vista == "precargas" else "") + "guardado=concepto+actualizado", status_code=303)
 
 
 @app.post("/configuracion/conceptos-excepcionales/asignaciones")
@@ -3388,6 +4367,7 @@ def asignar_concepto_excepcional(
     observacion: Annotated[str, Form()],
     fecha_hasta: Annotated[date | None, Form()] = None,
     cantidad_asignada: Annotated[Decimal | None, Form()] = None,
+    vista: str | None = None,
     db: Session = Depends(get_db),
 ):
     asignacion_activa, administra_catalogo = acceso_conceptos_excepcionales(request, db)
@@ -3401,6 +4381,13 @@ def asignar_concepto_excepcional(
     concepto = db.get(ConceptoExcepcional, concepto_excepcional_id)
     if concepto is None or not concepto.activo:
         raise HTTPException(status_code=422, detail="El concepto no existe o está inactivo.")
+    usuario = db.scalar(
+        select(Usuario)
+        .options(selectinload(Usuario.tipo_contratacion))
+        .where(Usuario.id == usuario_id)
+    )
+    if usuario is None:
+        raise HTTPException(status_code=404, detail="El usuario no existe.")
     observacion = observacion.strip()
     if not observacion:
         raise HTTPException(status_code=422, detail="La observación administrativa es obligatoria.")
@@ -3408,6 +4395,16 @@ def asignar_concepto_excepcional(
         raise HTTPException(status_code=422, detail="La fecha hasta no puede ser anterior a la fecha desde.")
     cantidad_configurada = None
     if concepto.tipo == "PRECARGA_PERIODO":
+        if not administra_catalogo:
+            raise HTTPException(
+                status_code=403,
+                detail="Sólo RRHH o ADMIN pueden asignar precargas autorizadas.",
+            )
+        if fecha_hasta is None:
+            raise HTTPException(
+                status_code=422,
+                detail="La precarga autorizada necesita una fecha hasta.",
+            )
         if cantidad_asignada is None or cantidad_asignada <= 0:
             raise HTTPException(
                 status_code=422,
@@ -3427,7 +4424,7 @@ def asignar_concepto_excepcional(
     solapada = db.scalar(consulta_solapada.limit(1))
     if solapada is not None:
         raise HTTPException(status_code=422, detail="El usuario ya tiene una asignación vigente que se superpone.")
-    db.add(UsuarioConceptoExcepcional(
+    nueva_asignacion = UsuarioConceptoExcepcional(
         usuario_id=usuario_id,
         concepto_excepcional_id=concepto_excepcional_id,
         fecha_desde=fecha_desde,
@@ -3436,15 +4433,33 @@ def asignar_concepto_excepcional(
         cantidad_asignada=cantidad_configurada,
         observacion=observacion,
         asignado_por=(request.session.get("user") or {}).get("id"),
-    ))
+    )
+    db.add(nueva_asignacion)
+    db.flush()
+    precargas_creadas = generar_precargas_autorizadas(
+        nueva_asignacion,
+        concepto,
+        usuario,
+        nueva_asignacion.asignado_por,
+        db,
+    )
     db.commit()
-    return RedirectResponse("/configuracion/conceptos-excepcionales?guardado=asignación+creada", status_code=303)
+    mensaje = "asignación creada"
+    if concepto.tipo == "PRECARGA_PERIODO":
+        mensaje = f"asignación creada y {precargas_creadas} precargas autorizadas generadas"
+    return RedirectResponse(
+        "/configuracion/conceptos-excepcionales?"
+        + ("vista=precargas&" if vista == "precargas" else "")
+        + "guardado=" + quote(mensaje),
+        status_code=303,
+    )
 
 
 @app.post("/configuracion/conceptos-excepcionales/asignaciones/{asignacion_id}/desactivar")
 def desactivar_asignacion_excepcional(
     asignacion_id: int,
     request: Request,
+    vista: str | None = None,
     db: Session = Depends(get_db),
 ):
     asignacion_activa, administra_catalogo = acceso_conceptos_excepcionales(request, db)
@@ -3458,11 +4473,23 @@ def desactivar_asignacion_excepcional(
     }
     if registro.usuario_id not in permitidos:
         raise HTTPException(status_code=403, detail="No podés modificar esa asignación.")
+    concepto = db.get(ConceptoExcepcional, registro.concepto_excepcional_id)
+    if concepto is not None and concepto.tipo == "PRECARGA_PERIODO":
+        precargas_futuras = list(db.scalars(
+            select(HoraExtra).where(
+                HoraExtra.usuario_id == registro.usuario_id,
+                HoraExtra.concepto_excepcional_id == registro.concepto_excepcional_id,
+                HoraExtra.tipo_registro == TIPO_PRECARGA_AUTORIZADA,
+                HoraExtra.fecha > date.today(),
+            )
+        ))
+        for precarga in precargas_futuras:
+            db.delete(precarga)
     registro.activo = False
     if registro.fecha_hasta is None or registro.fecha_hasta > date.today():
         registro.fecha_hasta = date.today()
     db.commit()
-    return RedirectResponse("/configuracion/conceptos-excepcionales?guardado=asignación+desactivada", status_code=303)
+    return RedirectResponse("/configuracion/conceptos-excepcionales?" + ("vista=precargas&" if vista == "precargas" else "") + "guardado=asignación+desactivada", status_code=303)
 
 
 @app.get("/configuracion/parametros", response_class=HTMLResponse)
@@ -4084,8 +5111,8 @@ def hora_editable_por_rrhh(
     db: Session,
 ) -> tuple[HoraExtra, UsuarioRol]:
     asignacion = obtener_asignacion_activa(request, db)
-    if asignacion.rol.upper() != "RRHH":
-        raise HTTPException(status_code=403, detail="Sólo RRHH puede corregir estas cargas.")
+    if asignacion.rol.upper() not in {"ADMIN", "RRHH"}:
+        raise HTTPException(status_code=403, detail="Sólo RRHH o ADMIN pueden corregir estas cargas.")
     hora = db.scalar(
         select(HoraExtra)
         .options(selectinload(HoraExtra.usuario))
@@ -4129,6 +5156,16 @@ def guardar_hora_rrhh(
     hora, asignacion = hora_editable_por_rrhh(request, hora_id, db)
     estado_anterior = hora.estado
     fecha_anterior = hora.fecha
+    domingos_anteriores = set()
+    if (
+        hora.tipo_registro == "OTRAS"
+        and str(hora.tipo_hora or "").upper() in TIPOS_NOCTURNAS_EN_JORNADA
+        and hora.hora_inicio is not None
+        and hora.hora_fin is not None
+    ):
+        domingos_anteriores = set(domingos_alcanzados_por_jornada(
+            hora.usuario, hora.fecha, hora.hora_inicio, hora.hora_fin,
+        ))
     cerraba_medianoche = hora.hora_fin == time(0, 0)
     jornada_anterior = (
         fecha_jornada_de_hora_estado(hora, db, estado_anterior)
@@ -4170,6 +5207,11 @@ def guardar_hora_rrhh(
                     hora.usuario_id, fecha, hora_inicio, hora_fin, db,
                 )
             else:
+                if str(hora.tipo_hora or "").strip().upper() == "EXTERIOR PRENSA":
+                    validar_exterior_prensa_unico_por_dia(
+                        hora.usuario_id, fecha, db,
+                        excluir_hora_id=hora.id,
+                    )
                 resultado = calcular_resultado_otra_carga(
                     hora.usuario_id, fecha, hora.tipo_hora,
                     cantidad or hora.cantidad or Decimal("0.00"), db,
@@ -4177,6 +5219,10 @@ def guardar_hora_rrhh(
         else:
             if hora_inicio is None or hora_fin is None:
                 raise CalculoHorasError("Ingresá la hora de inicio y finalización.")
+            validar_horas_extra_sin_superposicion_nocturnidad(
+                hora.usuario_id, fecha, hora_inicio, hora_fin, db,
+                excluir_hora_id=hora.id,
+            )
             resultado = calcular_resultado_horas_extra(
                 hora.usuario_id, fecha, hora_inicio, hora_fin, db,
                 marcar_como_franco=hora.tipo_dia == "FRANCO",
@@ -4202,6 +5248,26 @@ def guardar_hora_rrhh(
         hora.observacion_rechazo = None
         db.flush()
 
+        domingos_nuevos = set()
+        if (
+            hora.tipo_registro == "OTRAS"
+            and str(hora.tipo_hora or "").upper() in TIPOS_NOCTURNAS_EN_JORNADA
+            and hora.hora_inicio is not None
+            and hora.hora_fin is not None
+        ):
+            domingos_nuevos = set(domingos_alcanzados_por_jornada(
+                hora.usuario, hora.fecha, hora.hora_inicio, hora.hora_fin,
+            ))
+        recalcular_domingo_automatico_estado(
+            hora.usuario_id, domingos_anteriores | domingos_nuevos, db,
+            "APROBADA", aprobado_por=asignacion.usuario_id,
+            fecha_resolucion=momento,
+        )
+        if estado_anterior != "APROBADA":
+            recalcular_domingo_automatico_estado(
+                hora.usuario_id, domingos_anteriores, db, estado_anterior,
+            )
+
         if hora.tipo_registro == "HORAS":
             if estado_anterior == "PENDIENTE" and jornada_anterior is not None:
                 recalcular_conceptos_jornada_estado(
@@ -4222,6 +5288,12 @@ def guardar_hora_rrhh(
                         aprobado_por=asignacion.usuario_id,
                         fecha_resolucion=momento,
                     )
+        for fecha_switcher in {fecha_anterior, hora.fecha}:
+            recalcular_switcher_nocturnidad_estado(
+                hora.usuario_id, fecha_switcher, db, "APROBADA",
+                aprobado_por=asignacion.usuario_id,
+                fecha_resolucion=momento,
+            )
         db.commit()
     except (CalculoHorasError, SQLAlchemyError) as error:
         db.rollback()
@@ -4251,6 +5323,16 @@ def guardar_hora_propia(
         if hour.tipo_registro == "HORAS" else None
     )
     fecha_anterior = hour.fecha
+    domingos_anteriores = set()
+    if (
+        hour.tipo_registro == "OTRAS"
+        and str(hour.tipo_hora or "").upper() in TIPOS_NOCTURNAS_EN_JORNADA
+        and hour.hora_inicio is not None
+        and hour.hora_fin is not None
+    ):
+        domingos_anteriores = set(domingos_alcanzados_por_jornada(
+            hour.usuario, hour.fecha, hour.hora_inicio, hour.hora_fin,
+        ))
     cerraba_medianoche = hour.hora_fin == time(0, 0)
     try:
         observacion_limpia = clean_optional(observaciones)
@@ -4300,9 +5382,29 @@ def guardar_hora_propia(
             hour.horas_totales = result.horas_totales
             hour.horas_nocturnas = result.horas_nocturnas
             hour.solicita_reintegro = False
+        elif hour.tipo_registro == "OTRAS":
+            if str(hour.tipo_hora or "").strip().upper() == "EXTERIOR PRENSA":
+                validar_exterior_prensa_unico_por_dia(
+                    hour.usuario_id, fecha, db,
+                    excluir_hora_id=hour.id,
+                )
+            result = calcular_resultado_otra_carga(
+                hour.usuario_id, fecha, hour.tipo_hora,
+                hour.cantidad or Decimal("0.00"), db,
+            )
+            hour.hora_inicio = None
+            hour.hora_fin = None
+            hour.horas_totales = None
+            hour.horas_nocturnas = None
+            hour.cantidad = result.cantidad
+            hour.solicita_reintegro = False
         else:
             if hora_inicio is None or hora_fin is None:
                 raise CalculoHorasError("Ingresá la hora de inicio y finalización.")
+            validar_horas_extra_sin_superposicion_nocturnidad(
+                hour.usuario_id, fecha, hora_inicio, hora_fin, db,
+                excluir_hora_id=hour.id,
+            )
             result = calcular_resultado_horas_extra(
                 hour.usuario_id, fecha, hora_inicio, hora_fin, db,
                 # Las horas de un franco sólo nacen desde el flujo de día trabajado.
@@ -4322,6 +5424,20 @@ def guardar_hora_propia(
                 raise CalculoHorasError("Indicá qué día vas a tomar el franco o feriado trabajado.")
             hour.fecha_descanso_compensatorio = fecha_descanso_compensatorio
         db.flush()
+        domingos_nuevos = set()
+        if (
+            hour.tipo_registro == "OTRAS"
+            and str(hour.tipo_hora or "").upper() in TIPOS_NOCTURNAS_EN_JORNADA
+            and hour.hora_inicio is not None
+            and hour.hora_fin is not None
+        ):
+            domingos_nuevos = set(domingos_alcanzados_por_jornada(
+                hour.usuario, hour.fecha, hour.hora_inicio, hour.hora_fin,
+            ))
+        recalcular_domingo_automatico_estado(
+            hour.usuario_id, domingos_anteriores | domingos_nuevos, db,
+            "PENDIENTE",
+        )
         if hour.tipo_registro == "HORAS":
             jornada_nueva = fecha_jornada_de_hora_pendiente(hour, db)
             jornadas_afectadas = {jornada_anterior, jornada_nueva}
@@ -4334,6 +5450,10 @@ def guardar_hora_propia(
                     recalcular_conceptos_jornada_pendiente(
                         hour.usuario_id, fecha_jornada, db,
                     )
+        for fecha_switcher in {fecha_anterior, hour.fecha}:
+            recalcular_switcher_nocturnidad_estado(
+                hour.usuario_id, fecha_switcher, db, "PENDIENTE",
+            )
         db.commit()
     except (CalculoHorasError, SQLAlchemyError) as error:
         db.rollback()
@@ -4357,40 +5477,35 @@ def eliminar_hora_propia(hora_id: int, request: Request, db: Session = Depends(g
         if hour.tipo_registro == "HORAS" and hour.hora_fin == time(0, 0)
         else None
     )
-    domingos_asociados = []
+    fechas_domingo_afectadas: set[date] = set()
     if (
-        hour.tipo_registro == "DIA_TRABAJADO"
+        hour.tipo_registro in {"DIA_TRABAJADO", "OTRAS"}
         and hour.hora_inicio is not None
         and hour.hora_fin is not None
         and str(hour.usuario.convenio or "").strip().upper() == "SAT"
+        and (
+            hour.tipo_registro == "DIA_TRABAJADO"
+            or str(hour.tipo_hora or "").upper() in TIPOS_NOCTURNAS_EN_JORNADA
+        )
     ):
-        fechas_jornada = {
-            fecha_tramo
-            for fecha_tramo, _, _ in dividir_carga_en_fechas(
-                hour.fecha, hour.hora_inicio, hour.hora_fin,
-            )
-        }
-        domingos_asociados = list(db.scalars(
-            select(HoraExtra).where(
-                HoraExtra.usuario_id == usuario_id,
-                HoraExtra.fecha.in_(fechas_jornada),
-                HoraExtra.estado == "PENDIENTE",
-                HoraExtra.tipo_registro == "OTRAS",
-                func.upper(HoraExtra.tipo_hora) == "DOMINGO",
-                HoraExtra.hora_inicio.is_(None),
-            )
+        fechas_domingo_afectadas = set(domingos_alcanzados_por_jornada(
+            hour.usuario, hour.fecha, hour.hora_inicio, hour.hora_fin,
         ))
     try:
-        for domingo in domingos_asociados:
-            db.delete(domingo)
         db.delete(hour)
         db.flush()
+        recalcular_domingo_automatico_estado(
+            usuario_id, fechas_domingo_afectadas, db, "PENDIENTE",
+        )
         if fecha_jornada is not None:
             recalcular_conceptos_jornada_pendiente(usuario_id, fecha_jornada, db)
         if fecha_siguiente_afectada is not None:
             recalcular_conceptos_jornada_pendiente(
                 usuario_id, fecha_siguiente_afectada, db,
             )
+        recalcular_switcher_nocturnidad_estado(
+            usuario_id, hour.fecha, db, "PENDIENTE",
+        )
         db.commit()
     except SQLAlchemyError as error:
         db.rollback()

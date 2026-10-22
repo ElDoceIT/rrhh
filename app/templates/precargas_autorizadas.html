@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% block title %}Precargas autorizadas{% endblock %}
+{% block content %}
+<div class="container">
+  <nav class="breadcrumb" aria-label="Migas de pan"><a href="/">Inicio</a><i class="bi bi-chevron-right"></i><span>Configuración</span><i class="bi bi-chevron-right"></i><strong>Precargas autorizadas</strong></nav>
+  <header class="page-header"><div><span class="eyebrow">Configuración</span><h1>Precargas autorizadas</h1><p>Armá un pack periódico usando los conceptos generales disponibles para el convenio de cada persona.</p></div></header>
+
+  {% if guardado %}<div class="alert success"><i class="bi bi-check-circle-fill"></i> {{ guardado }}</div>{% endif %}
+  {% if error %}<div class="alert error"><i class="bi bi-exclamation-triangle-fill"></i> {{ error }}</div>{% endif %}
+
+  <section class="card form-card">
+    <div class="section-heading section-heading-pill"><div><span class="section-kicker">Nuevo pack</span><h2>Asignar precargas</h2></div></div>
+    <p class="muted">Se generará una carga ya autorizada por cada período comprendido en la vigencia. La fecha es solamente representativa y no genera días trabajados ni adicionales automáticos.</p>
+    {% if usuarios %}
+    <form method="post" action="/configuracion/precargas-autorizadas" class="rule-form" data-preload-pack-form>
+      <label class="field"><span>Usuario *</span><select name="usuario_id" required data-preload-user><option value="" selected disabled>Seleccionar</option>{% for usuario in usuarios %}{% set contratacion = usuario.tipo_contratacion.contratacion|lower if usuario.tipo_contratacion else '' %}<option value="{{ usuario.id }}" data-convenio="{{ usuario.convenio|upper }}" data-period-type="{{ 'nomina' if contratacion in ['nómina', 'nomina'] else 'calendario' }}">{{ usuario.apellido }}, {{ usuario.nombre }} · {{ usuario.legajo or 'Sin legajo' }} · {{ usuario.convenio }}</option>{% endfor %}</select></label>
+      <label class="field"><span>Concepto *</span><select name="tipo_hora" required disabled data-preload-concept><option value="" selected disabled>Primero seleccioná un usuario</option></select><small>Se muestran solamente conceptos configurados para su convenio.</small></label>
+      <label class="field"><span>Cantidad por período *</span><input type="number" name="cantidad" min="0.01" step="0.01" required></label>
+      <label class="field"><span>Período inicial *</span><select name="periodo_desde" required disabled data-preload-period-from><option value="" selected disabled>Primero seleccioná un usuario</option></select></label>
+      <label class="field"><span>Período final *</span><select name="periodo_hasta" required disabled data-preload-period-until><option value="" selected disabled>Primero seleccioná un usuario</option></select><small>Se generará una precarga por período, con un máximo de 12.</small></label>
+      <label class="field field-wide"><span>Motivo *</span><textarea name="observacion" rows="3" maxlength="1000" required placeholder="Indicá el motivo administrativo del pack"></textarea></label>
+      <div class="form-actions"><button class="ui-btn primary-btn" type="submit"><i class="bi bi-calendar2-check"></i> Generar pack autorizado</button></div>
+    </form>
+    {% else %}<div class="empty-state"><i class="bi bi-person-x"></i><strong>No hay usuarios disponibles</strong><span>Se necesita al menos un usuario activo con convenio asignado.</span></div>{% endif %}
+  </section>
+
+  {% if pack_edicion %}<section class="card form-card">
+    <div class="section-heading section-heading-pill"><div><span class="section-kicker">Edición</span><h2>Modificar pack de {{ pack_edicion.usuario.apellido }}, {{ pack_edicion.usuario.nombre }}</h2></div></div>
+    <p class="muted">Los cambios se aplican desde el período actual en adelante. Las precargas de períodos anteriores se conservan como historial.</p>
+    <form method="post" action="/configuracion/precargas-autorizadas/{{ pack_edicion.id }}/editar" class="rule-form">
+      <label class="field"><span>Concepto *</span><select name="tipo_hora" required>{% for concepto in conceptos_edicion %}<option value="{{ concepto }}" {% if concepto == pack_edicion.tipo_hora|upper %}selected{% endif %}>{{ concepto }}</option>{% endfor %}</select></label>
+      <label class="field"><span>Cantidad por período *</span><input type="number" name="cantidad" min="0.01" step="0.01" required value="{{ pack_edicion.cantidad }}"></label>
+      <label class="field"><span>Período inicial *</span><select name="periodo_desde" required>{% for periodo in periodos_edicion %}<option value="{{ periodo.valor }}" {% if periodo.valor == pack_edicion.fecha_desde.isoformat() %}selected{% endif %}>{{ periodo.etiqueta }}</option>{% endfor %}</select></label>
+      <label class="field"><span>Período final *</span><select name="periodo_hasta" required>{% for periodo in periodos_edicion %}<option value="{{ periodo.valor }}" {% if periodo.valor == pack_edicion.fecha_hasta.isoformat() %}selected{% endif %}>{{ periodo.etiqueta }}</option>{% endfor %}</select></label>
+      <label class="field field-wide"><span>Motivo *</span><textarea name="observacion" rows="3" maxlength="1000" required>{{ (pack_edicion.observaciones or '')|replace('Precarga autorizada por período. ', '') }}</textarea></label>
+      <div class="form-actions"><a class="ui-btn" href="/configuracion/precargas-autorizadas">Cancelar</a><button class="ui-btn primary-btn" type="submit"><i class="bi bi-check-lg"></i> Guardar cambios</button></div>
+    </form>
+  </section>{% endif %}
+
+  <section class="card">
+    <div class="section-heading section-heading-pill"><div><span class="section-kicker">Seguimiento</span><h2>Packs generados</h2></div><span class="count-chip">{{ packs|length }}</span></div>
+    {% if packs %}<div class="table-wrap"><table class="ui-table">
+      <thead><tr><th>Persona</th><th>Períodos</th><th>Concepto</th><th>Cantidad</th><th>Estado</th><th>Motivo</th><th>Acciones</th></tr></thead>
+      <tbody>{% for pack in packs %}<tr>
+        <td data-label="Persona"><strong>{{ pack.usuario.apellido }}, {{ pack.usuario.nombre }}</strong><span class="cell-help">{{ pack.usuario.convenio }} · Legajo {{ pack.usuario.legajo or '—' }}</span></td>
+        <td data-label="Períodos"><strong>{{ pack.fecha_desde.strftime('%d/%m/%Y') }} a {{ pack.fecha_hasta.strftime('%d/%m/%Y') }}</strong><span class="cell-help">{{ pack.filas|length }} {{ 'período' if pack.filas|length == 1 else 'períodos' }}</span></td>
+        <td data-label="Concepto"><span class="type-chip">{{ pack.tipo_hora }}</span></td>
+        <td data-label="Cantidad"><strong>{{ '%.2f'|format(pack.cantidad) }}</strong><span class="cell-help">por período</span></td>
+        <td data-label="Estado"><span class="status-chip success-chip">Autorizado</span></td>
+        <td data-label="Motivo" class="observations">{{ (pack.observaciones or '—')|replace('Precarga autorizada por período. ', '') }}</td>
+        <td data-label="Acciones" class="actions-column">{% if pack.tiene_periodos_modificables %}<a class="ui-btn icon-btn edit-btn" href="/configuracion/precargas-autorizadas?editar={{ pack.id }}" aria-label="Editar pack desde el período actual" title="Editar desde el período actual"><i class="bi bi-pencil"></i></a><form method="post" action="/configuracion/precargas-autorizadas/{{ pack.id }}/eliminar" class="inline-form" onsubmit="return confirm('¿Eliminar las precargas del período actual y los futuros? Las anteriores se conservarán.');"><button class="ui-btn icon-btn danger-btn" type="submit" aria-label="Eliminar pack desde el período actual" title="Eliminar desde el período actual"><i class="bi bi-trash"></i></button></form>{% else %}<span class="muted">Histórico</span>{% endif %}</td>
+      </tr>{% endfor %}</tbody>
+    </table></div>{% else %}<div class="empty-state"><i class="bi bi-calendar2-check"></i><strong>Todavía no hay precargas</strong><span>Generá el primer pack para una persona.</span></div>{% endif %}
+  </section>
+</div>
+<script>
+const preloadConceptsByAgreement = {{ conceptos_por_convenio|tojson }};
+const preloadPeriods = {{ periodos_precarga|tojson }};
+const preloadUser = document.querySelector('[data-preload-user]');
+const preloadConcept = document.querySelector('[data-preload-concept]');
+const preloadPeriodFrom = document.querySelector('[data-preload-period-from]');
+const preloadPeriodUntil = document.querySelector('[data-preload-period-until]');
+const updatePreloadConcepts = () => {
+  const agreement = preloadUser?.selectedOptions[0]?.dataset.convenio || '';
+  const concepts = preloadConceptsByAgreement[agreement] || [];
+  if (!preloadConcept) return;
+  preloadConcept.replaceChildren();
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.disabled = true;
+  placeholder.selected = true;
+  placeholder.textContent = concepts.length ? 'Seleccionar' : 'No hay conceptos para este convenio';
+  preloadConcept.appendChild(placeholder);
+  concepts.forEach((concept) => {
+    const option = document.createElement('option');
+    option.value = concept;
+    option.textContent = concept;
+    preloadConcept.appendChild(option);
+  });
+  preloadConcept.disabled = concepts.length === 0;
+};
+const fillPeriodSelect = (select, periods, placeholder) => {
+  if (!select) return;
+  select.replaceChildren();
+  const first = document.createElement('option');
+  first.value = '';
+  first.disabled = true;
+  first.selected = true;
+  first.textContent = placeholder;
+  select.appendChild(first);
+  periods.forEach((period) => {
+    const option = document.createElement('option');
+    option.value = period.valor;
+    option.textContent = period.etiqueta;
+    select.appendChild(option);
+  });
+  select.disabled = periods.length === 0;
+};
+const updatePreloadPeriods = () => {
+  const type = preloadUser?.selectedOptions[0]?.dataset.periodType || '';
+  const periods = preloadPeriods[type] || [];
+  fillPeriodSelect(preloadPeriodFrom, periods, periods.length ? 'Seleccionar' : 'No hay períodos disponibles');
+  fillPeriodSelect(preloadPeriodUntil, periods, periods.length ? 'Seleccionar' : 'No hay períodos disponibles');
+};
+const restrictFinalPeriods = () => {
+  const from = preloadPeriodFrom?.value || '';
+  if (!preloadPeriodUntil) return;
+  Array.from(preloadPeriodUntil.options).forEach((option) => {
+    if (option.value) option.disabled = Boolean(from && option.value < from);
+  });
+  if (preloadPeriodUntil.value && preloadPeriodUntil.value < from) preloadPeriodUntil.value = '';
+};
+preloadUser?.addEventListener('change', () => {
+  updatePreloadConcepts();
+  updatePreloadPeriods();
+});
+preloadPeriodFrom?.addEventListener('change', restrictFinalPeriods);
+updatePreloadConcepts();
+updatePreloadPeriods();
+</script>
+{% endblock %}
